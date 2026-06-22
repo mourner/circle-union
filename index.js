@@ -3,6 +3,7 @@ import {within} from 'geoflatbush';
 
 const RAD = Math.PI / 180;
 const R = 6371; // mean Earth radius, km
+const TWO_PI = 2 * Math.PI;
 
 /**
  * @typedef {Object} State
@@ -15,6 +16,12 @@ const R = 6371; // mean Earth radius, km
  * @property {Float64Array} cz      center unit vectors
  * @property {Float64Array} cosR
  * @property {Float64Array} sinR    cos/sin of angular radius ρ = r/R
+ * @property {Float64Array} ux
+ * @property {Float64Array} uy
+ * @property {Float64Array} uz      local east unit vector (tangent frame)
+ * @property {Float64Array} vx
+ * @property {Float64Array} vy
+ * @property {Float64Array} vz      local north unit vector (tangent frame)
  * @property {Flatbush} index
  */
 
@@ -45,6 +52,8 @@ export function build(lng, lat, r) {
     const cz = new Float64Array(n);
     const cosR = new Float64Array(n);
     const sinR = new Float64Array(n);
+    const ux = new Float64Array(n), uy = new Float64Array(n), uz = new Float64Array(n);
+    const vx = new Float64Array(n), vy = new Float64Array(n), vz = new Float64Array(n);
 
     const index = new Flatbush(n);
 
@@ -56,10 +65,16 @@ export function build(lng, lat, r) {
         sr[i] = ri;
 
         const latR = lati * RAD, lngR = lngi * RAD;
-        const cosLat = Math.cos(latR);
-        cx[i] = cosLat * Math.cos(lngR);
-        cy[i] = cosLat * Math.sin(lngR);
-        cz[i] = Math.sin(latR);
+        const cosLat = Math.cos(latR), sinLat = Math.sin(latR);
+        const cosLng = Math.cos(lngR), sinLng = Math.sin(lngR);
+        cx[i] = cosLat * cosLng;
+        cy[i] = cosLat * sinLng;
+        cz[i] = sinLat;
+
+        // local tangent frame at the center: east u, north v (both ⊥ c and each other,
+        // u × v = c so increasing θ is CCW seen from outside the sphere). θ=0 → east.
+        ux[i] = -sinLng;          uy[i] = cosLng;           uz[i] = 0;
+        vx[i] = -sinLat * cosLng; vy[i] = -sinLat * sinLng; vz[i] = cosLat;
 
         const rho = ri / R;
         cosR[i] = Math.cos(rho);
@@ -69,7 +84,7 @@ export function build(lng, lat, r) {
     }
     index.finish();
 
-    return {n, lng: slng, lat: slat, r: sr, cx, cy, cz, cosR, sinR, index};
+    return {n, lng: slng, lat: slat, r: sr, cx, cy, cz, cosR, sinR, ux, uy, uz, vx, vy, vz, index};
 }
 
 /**
@@ -164,3 +179,148 @@ export function scan(state) {
 
     return {covered, pairCount, coveredCount, points, pointCount: np, pairs};
 }
+
+/**
+ * §4. Per-circle interval complement → boundary arcs.
+ *
+ * Each proper pair `(i, j)` from §3 covers a single angular interval on circle `i`
+ * (the part of `∂i` inside disk `j`) and, symmetrically, one on circle `j`. We bound
+ * each interval by the two shared intersection points' bearings in the circle's local
+ * frame — `θ(p) = atan2(p·v, p·u)` — and pick the arc containing the bearing toward the
+ * other center (deepest inside the other disk). Unioning all covered intervals on a
+ * circle and taking the complement gives its surviving boundary arcs; each arc endpoint
+ * is a §3 intersection point, referenced by its stable ID so §5 stitches by ID.
+ *
+ * The union/complement is a circular depth sweep: +1 at each covered interval's CCW
+ * start, −1 at its end; boundary arcs are the maximal runs where depth returns to 0.
+ * `baseDepth` seeds the sweep with the coverage straddling the atan2 seam (−π).
+ *
+ *   - active circle, no proper neighbors → one full-circle arc (startId = −1)
+ *   - active circle fully covered by ≥2 neighbors jointly → zero arcs
+ *   - engulfed (`covered`) circle → skipped (handled in §2)
+ *
+ * @param {State} state
+ * @param {{covered: Uint8Array, pairCount: number, points: Float64Array, pairs: Int32Array}} scanResult
+ */
+export function arcs(state, scanResult) {
+    const {n, cx, cy, cz, ux, uy, uz, vx, vy, vz} = state;
+    const {covered, pairCount, points, pairs} = scanResult;
+
+    // Covered-interval events grouped per circle: theta, delta (+1 start / −1 end), and the
+    // intersection-point ID at that endpoint. Each proper pair yields one interval per circle
+    // = two events; baseDepth[c] counts intervals wrapping the seam (CCW start > end).
+    const E = pairCount * 4;
+    const evTheta = new Float64Array(E);
+    const evDelta = new Int8Array(E);
+    const evId = new Int32Array(E);
+    const evCircle = new Int32Array(E);
+    const baseDepth = new Int32Array(n);
+    let ne = 0;
+
+    // record circle c's covered interval bounded by points pa (id idA) and pb (id idB),
+    // selecting the arc toward (dirx,diry,dirz) — the bearing to the other circle's center.
+    const addInterval = (c, ax, ay, az, idA, bx, by, bz, idB, dirx, diry, dirz) => {
+        const eux = ux[c], euy = uy[c], euz = uz[c];
+        const nvx = vx[c], nvy = vy[c], nvz = vz[c];
+        const thA = Math.atan2(ax * nvx + ay * nvy + az * nvz, ax * eux + ay * euy + az * euz);
+        const thB = Math.atan2(bx * nvx + by * nvy + bz * nvz, bx * eux + by * euy + bz * euz);
+        const mid = Math.atan2(dirx * nvx + diry * nvy + dirz * nvz, dirx * eux + diry * euy + dirz * euz);
+
+        // CCW from thA to thB; covered arc is the side containing `mid`
+        let dab = thB - thA; if (dab < 0) dab += TWO_PI;
+        let dam = mid - thA; if (dam < 0) dam += TWO_PI;
+        let s, e, sId, eId;
+        if (dam <= dab) { s = thA; e = thB; sId = idA; eId = idB; }
+        else { s = thB; e = thA; sId = idB; eId = idA; }
+
+        if (s > e) baseDepth[c]++; // interval wraps the seam
+        evTheta[ne] = s; evDelta[ne] = 1; evId[ne] = sId; evCircle[ne] = c; ne++;
+        evTheta[ne] = e; evDelta[ne] = -1; evId[ne] = eId; evCircle[ne] = c; ne++;
+    };
+
+    for (let pi = 0; pi < pairCount; pi++) {
+        const q = pi * 3;
+        const i = pairs[q], j = pairs[q + 1], baseId = pairs[q + 2];
+        const pp = baseId * 3;
+        const ax = points[pp], ay = points[pp + 1], az = points[pp + 2];     // p+ (baseId)
+        const bx = points[pp + 3], by = points[pp + 4], bz = points[pp + 5]; // p− (baseId+1)
+        addInterval(i, ax, ay, az, baseId, bx, by, bz, baseId + 1, cx[j], cy[j], cz[j]);
+        addInterval(j, ax, ay, az, baseId, bx, by, bz, baseId + 1, cx[i], cy[i], cz[i]);
+    }
+
+    // counting sort event indices by circle → contiguous per-circle ranges
+    const off = new Int32Array(n + 1);
+    for (let k = 0; k < ne; k++) off[evCircle[k] + 1]++;
+    for (let c = 0; c < n; c++) off[c + 1] += off[c];
+    const order = new Int32Array(ne);
+    const cursor = off.slice(0, n);
+    for (let k = 0; k < ne; k++) order[cursor[evCircle[k]]++] = k;
+
+    // boundary arcs: circle index, CCW [thetaStart, thetaEnd], endpoint point IDs.
+    // startId = −1 marks a full-circle arc (no endpoints).
+    let cap = 1 << 12;
+    let arcCircle = new Int32Array(cap);
+    let arcThetaStart = new Float64Array(cap);
+    let arcThetaEnd = new Float64Array(cap);
+    let arcStartId = new Int32Array(cap);
+    let arcEndId = new Int32Array(cap);
+    let arcCount = 0, fullCount = 0;
+
+    const pushArc = (c, ts, te, sId, eId) => {
+        if (arcCount === cap) {
+            cap *= 2;
+            arcCircle = grow32(arcCircle, cap); arcStartId = grow32(arcStartId, cap); arcEndId = grow32(arcEndId, cap);
+            arcThetaStart = grow64(arcThetaStart, cap); arcThetaEnd = grow64(arcThetaEnd, cap);
+        }
+        arcCircle[arcCount] = c; arcThetaStart[arcCount] = ts; arcThetaEnd[arcCount] = te;
+        arcStartId[arcCount] = sId; arcEndId[arcCount] = eId; arcCount++;
+    };
+
+    for (let c = 0; c < n; c++) {
+        if (covered[c]) continue;
+        const lo = off[c], hi = off[c + 1];
+
+        if (lo === hi) { // active, no proper neighbors → whole circle is one arc
+            pushArc(c, 0, TWO_PI, -1, -1);
+            fullCount++;
+            continue;
+        }
+
+        // insertion-sort this circle's event indices by theta (ties: +1 before −1)
+        for (let a = lo + 1; a < hi; a++) {
+            const key = order[a];
+            const kt = evTheta[key], kd = evDelta[key];
+            let b = a - 1;
+            while (b >= lo && (evTheta[order[b]] > kt || (evTheta[order[b]] === kt && evDelta[order[b]] < kd))) {
+                order[b + 1] = order[b]; b--;
+            }
+            order[b + 1] = key;
+        }
+
+        // sweep: boundary arcs are runs where coverage depth is 0
+        let depth = baseDepth[c];
+        let gapTheta = 0, gapId = -1, haveGap = false;   // a boundary arc opened (coverage hit 0)
+        let seamTheta = 0, seamId = -1, haveSeam = false; // the start closing the seam-wrapping arc
+        for (let a = lo; a < hi; a++) {
+            const k = order[a];
+            if (evDelta[k] === 1) {
+                if (depth === 0) {
+                    if (haveGap) { pushArc(c, gapTheta, evTheta[k], gapId, evId[k]); haveGap = false; }
+                    else { seamTheta = evTheta[k]; seamId = evId[k]; haveSeam = true; }
+                }
+                depth++;
+            } else {
+                depth--;
+                if (depth === 0) { gapTheta = evTheta[k]; gapId = evId[k]; haveGap = true; }
+            }
+        }
+        if (haveGap && haveSeam) pushArc(c, gapTheta, seamTheta, gapId, seamId); // arc straddling the seam
+    }
+
+    return {arcCount, fullCount, arcCircle, arcThetaStart, arcThetaEnd, arcStartId, arcEndId};
+}
+
+/** @param {Int32Array} a @param {number} cap */
+function grow32(a, cap) { const g = new Int32Array(cap); g.set(a); return g; }
+/** @param {Float64Array} a @param {number} cap */
+function grow64(a, cap) { const g = new Float64Array(cap); g.set(a); return g; }
