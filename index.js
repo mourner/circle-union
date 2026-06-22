@@ -4,7 +4,7 @@ import {within} from 'geoflatbush';
 const RAD = Math.PI / 180;
 const R = 6371; // mean Earth radius, km
 const TWO_PI = 2 * Math.PI;
-const WELD = 1e-9; // unit-vector grid for welding coincident intersection-point IDs (§5 stitch)
+const COINCIDENT = 1 - 1e-13; // cos(angular dist) above which two centers are treated as co-located (§2)
 
 /**
  * @typedef {Object} State
@@ -117,23 +117,6 @@ export function scan(state) {
     const covered = new Uint8Array(n);
     let pairCount = 0, coveredCount = 0;
 
-    // §2a. Collapse coincident-center circles. Circles sharing a center (to CWELD
-    // precision in unit-vector space) are concentric, so the largest radius contains
-    // all the rest. Real data has many co-located tower sites (identical lng/lat,
-    // differing radius); equal-radius ones in particular slip past the §2 engulf test
-    // (cij rounds to just under cos(ρᵢ−ρⱼ)=1) and otherwise survive as degenerate thin
-    // lenses whose near-coincident intersection points break §4 completeness and the §5
-    // handoff. Circles are radius-descending (build), so the first id seen per cell is
-    // the largest — keep it, drop the rest. CWELD ≈ 6 μm: far below the nearest distinct
-    // real centers (>10 m apart), so this never merges genuinely separate circles.
-    const CWELD = 1e-9;
-    const centerCell = new Map();
-    for (let i = 0; i < n; i++) {
-        const key = Math.round(cx[i] / CWELD) + ',' + Math.round(cy[i] / CWELD) + ',' + Math.round(cz[i] / CWELD);
-        if (centerCell.has(key)) { covered[i] = 1; coveredCount++; }
-        else centerCell.set(key, i);
-    }
-
     // disjoint-set forest over circles (union by size + path halving). Each proper
     // pair unions its two endpoints; roots partition active circles into components.
     const parent = new Int32Array(n);
@@ -168,6 +151,15 @@ export function scan(state) {
             const cosProd = cosRi * cosRj;
             const sinProd = sinRi * sinRj;
             if (cij <= cosProd - sinProd) return false; // disjoint: cij ≤ cos(ρi+ρj)
+
+            // coincident centers (co-located tower sites — identical lng/lat, common in
+            // real data). i is radius-descending ≥ j, so i ⊇ j. We must catch this
+            // explicitly: equal-radius duplicates round cij just under the engulf
+            // threshold cos(ρᵢ−ρⱼ)=1 and would otherwise survive as degenerate thin
+            // lenses whose near-coincident intersection points break §4 completeness and
+            // the §5 handoff. cij ≥ 1−1e-13 ⇒ centers within ~3 m — far below the nearest
+            // distinct real centers (>10 m), so this never merges genuinely separate ones.
+            if (cij >= COINCIDENT) { covered[j] = 1; coveredCount++; return false; }
 
             if (cij >= cosProd + sinProd) {             // engulf: cij ≥ cos(ρi−ρj), i ⊇ j
                 covered[j] = 1;
@@ -417,26 +409,14 @@ export function stitch(state, scanResult, arcResult) {
     const {points, pointCount, component} = scanResult;
     const {arcCount, arcCircle, arcThetaStart, arcThetaEnd, arcStartId, arcEndId} = arcResult;
 
-    // Weld coincident point IDs. Near-coincident circles (co-located towers, ≠ radius)
-    // intersect a common neighbour at the *same* geometric location but, minted from
-    // distinct pairs, get distinct IDs — so the arc ending there and the arc starting
-    // there carry different integer IDs and the topological handoff fails. Snap every
-    // point to a fine grid (WELD ≈ 6 μm in unit-vector space) and route the handoff
-    // through a canonical ID per occupied cell. WELD sits on a wide stable plateau
-    // (1e-12…1e-7 all identical here); larger would start merging distinct vertices.
-    const canon = new Int32Array(pointCount);
-    const cell = new Map();
-    for (let id = 0; id < pointCount; id++) {
-        const p = id * 3;
-        const key = Math.round(points[p] / WELD) + ',' + Math.round(points[p + 1] / WELD) + ',' + Math.round(points[p + 2] / WELD);
-        const seen = cell.get(key);
-        if (seen === undefined) { cell.set(key, id); canon[id] = id; } else canon[id] = seen;
-    }
-
-    // each canonical point ID is the start of exactly one (non-full) arc
+    // Each consecutive pair of boundary arcs shares a vertex that is one intersection
+    // point of one circle pair, so the arc ending there and the arc starting there carry
+    // the *same* integer point ID — the handoff is an exact ID match, no welding needed.
+    // (Coincident-center duplicates, which used to mint the same location under distinct
+    // IDs, are dropped at the source in scan's §2 coincidence test.)
     const arcByStart = new Int32Array(pointCount).fill(-1);
     for (let k = 0; k < arcCount; k++) {
-        if (arcStartId[k] !== -1) arcByStart[canon[arcStartId[k]]] = k;
+        if (arcStartId[k] !== -1) arcByStart[arcStartId[k]] = k;
     }
 
     const visited = new Uint8Array(arcCount);
@@ -482,7 +462,7 @@ export function stitch(state, scanResult, arcResult) {
             if (!havePoint0) { p0x = ax; p0y = ay; p0z = az; havePoint0 = true; }
             else area += triExcess(p0x, p0y, p0z, ax, ay, az, bx, by, bz);
 
-            const next = arcByStart[canon[arcEndId[k]]];
+            const next = arcByStart[arcEndId[k]];
             if (next === k0) { closed = true; break; }
             // a dead end (−1) or an arc already consumed means the shared-ID handoff broke —
             // only happens on near-coincident circles (duplicate point IDs); stop, don't corrupt.
