@@ -139,6 +139,25 @@ export function scan(state) {
     let pairs = new Int32Array(1 << 15);    // 3 slots/pair
     let npairs = 0;
 
+    // Drop exact-duplicate circles up front (co-located tower rows — bit-identical lng/lat
+    // are common in real data). This MUST precede the main sweep: otherwise an earlier,
+    // larger circle pairs with several duplicates at once, minting bit-identical §3 points
+    // under distinct IDs that desync the §5 handoff. A plain hash set keyed on the exact
+    // centre does it in O(n): the first circle seen at a location wins (lowest index ⇒
+    // largest radius, since circles are radius-descending) and any later one with the same
+    // centre is engulfed. Only *bit-identical* centres need this — near-but-not-exact
+    // coincidences mint distinct points and are caught by the §2 engulf test below, so the
+    // match is exact float equality (the round() only derives hash bits, not a tolerance).
+    let cap = 1; while (cap < n * 2) cap <<= 1;
+    const mask = cap - 1;
+    const slot = new Int32Array(cap).fill(-1);
+    for (let i = 0; i < n; i++) {
+        let h = (Math.imul(Math.round(lat[i] * 1e7), 0x9e3779b1) ^ Math.round(lng[i] * 1e7)) & mask;
+        while (slot[h] !== -1 && (lat[slot[h]] !== lat[i] || lng[slot[h]] !== lng[i])) h = (h + 1) & mask;
+        if (slot[h] === -1) slot[h] = i;                    // new location → representative
+        else { covered[i] = 1; coveredCount++; }            // same centre as an earlier, larger circle
+    }
+
     for (let i = 0; i < n; i++) {
         if (covered[i]) continue;
         const ri = r[i];
@@ -151,15 +170,6 @@ export function scan(state) {
             const cosProd = cosRi * cosRj;
             const sinProd = sinRi * sinRj;
             if (cij <= cosProd - sinProd) return false; // disjoint: cij ≤ cos(ρi+ρj)
-
-            // coincident centers (co-located tower sites — identical lng/lat, common in
-            // real data). i is radius-descending ≥ j, so i ⊇ j. We must catch this
-            // explicitly: equal-radius duplicates round cij just under the engulf
-            // threshold cos(ρᵢ−ρⱼ)=1 and would otherwise survive as degenerate thin
-            // lenses whose near-coincident intersection points break §4 completeness and
-            // the §5 handoff. cij ≥ 1−1e-13 ⇒ centers within ~3 m — far below the nearest
-            // distinct real centers (>10 m), so this never merges genuinely separate ones.
-            if (cij >= COINCIDENT) { covered[j] = 1; coveredCount++; return false; }
 
             if (cij >= cosProd + sinProd) {             // engulf: cij ≥ cos(ρi−ρj), i ⊇ j
                 covered[j] = 1;
@@ -397,9 +407,8 @@ export function arcs(state, scanResult) {
  * @param {{points: Float64Array, pointCount: number, component: Int32Array}} scanResult
  * @param {{arcCount: number, arcCircle: Int32Array, arcThetaStart: Float64Array,
  *   arcThetaEnd: Float64Array, arcStartId: Int32Array, arcEndId: Int32Array}} arcResult
- * `openRings` counts rings whose end→start handoff broke (only on near-coincident
- * circles, which mint duplicate point IDs at one location — a Step 7 robustness item);
- * 0 on generic-position input.
+ * `openRings` counts rings whose end→start handoff broke; expected 0 — a nonzero count
+ * signals a §2/§3/§4 inconsistency (e.g. an un-collapsed coincident circle pair).
  *
  * @returns {{ringCount: number, ringArcs: Int32Array, ringStart: Int32Array,
  *   ringComponent: Int32Array, ringArea: Float64Array, openRings: number}}
@@ -409,15 +418,13 @@ export function stitch(state, scanResult, arcResult) {
     const {points, pointCount, component} = scanResult;
     const {arcCount, arcCircle, arcThetaStart, arcThetaEnd, arcStartId, arcEndId} = arcResult;
 
-    // Each consecutive pair of boundary arcs shares a vertex that is one intersection
-    // point of one circle pair, so the arc ending there and the arc starting there carry
-    // the *same* integer point ID — the handoff is an exact ID match, no welding needed.
-    // (Coincident-center duplicates, which used to mint the same location under distinct
-    // IDs, are dropped at the source in scan's §2 coincidence test.)
-    const arcByStart = new Int32Array(pointCount).fill(-1);
-    for (let k = 0; k < arcCount; k++) {
-        if (arcStartId[k] !== -1) arcByStart[arcStartId[k]] = k;
-    }
+    // Resolve the end→start handoff by point ID. Each §3 intersection point is the single
+    // vertex of one circle *pair*: both circles reference the *same* point ID there (§4), so
+    // the arc ending at a vertex and the arc continuing from it carry identical IDs — an
+    // exact integer match, no geometry. (This relies on §2 having collapsed coincident
+    // duplicate circles, which would otherwise mint two IDs at one location; see scan.)
+    const arcByStartId = new Int32Array(pointCount).fill(-1);
+    for (let k = 0; k < arcCount; k++) if (arcStartId[k] !== -1) arcByStartId[arcStartId[k]] = k;
 
     const visited = new Uint8Array(arcCount);
     const ringArcs = new Int32Array(arcCount); // arc indices, grouped by ring (each arc written once)
@@ -462,7 +469,7 @@ export function stitch(state, scanResult, arcResult) {
             if (!havePoint0) { p0x = ax; p0y = ay; p0z = az; havePoint0 = true; }
             else area += triExcess(p0x, p0y, p0z, ax, ay, az, bx, by, bz);
 
-            const next = arcByStart[arcEndId[k]];
+            const next = arcByStartId[arcEndId[k]];
             if (next === k0) { closed = true; break; }
             // a dead end (−1) or an arc already consumed means the shared-ID handoff broke —
             // only happens on near-coincident circles (duplicate point IDs); stop, don't corrupt.
