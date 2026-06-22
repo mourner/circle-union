@@ -94,20 +94,43 @@ export function build(lng, lat, r) {
  *       work, both its own searches and as a target of others').
  *   §3  for each *properly* intersecting pair, solve the two planes ∩ sphere
  *       for the two boundary points `p± = α·cᵢ + β·cⱼ ± γ·n` and store them once
- *       with a stable integer ID shared by both circles' arc lists.
+ *       with a stable integer ID shared by both circles' arc lists, and `union`
+ *       the pair in a disjoint-set forest — the overlap graph's connected
+ *       components *are* the union's connected components, which §7 uses to nest
+ *       holes into shells by grouping rather than by point-in-ring search.
  *
  * Point storage is interleaved `[x,y,z]` (points are always consumed as whole
  * vectors). Pair storage is `[i, j, baseId]` per proper pair; the pair's two
  * points are `baseId` (the `+γ` root) and `baseId + 1` (the `−γ` root).
  *
+ * `component` holds a compacted component id (0…componentCount−1) per active
+ * circle; engulfed (`covered`) circles get −1 (dropped, never contribute a ring).
+ *
  * @param {State} state
  * @returns {{covered: Uint8Array, pairCount: number, coveredCount: number,
- *   points: Float64Array, pointCount: number, pairs: Int32Array}}
+ *   points: Float64Array, pointCount: number, pairs: Int32Array,
+ *   component: Int32Array, componentCount: number}}
  */
 export function scan(state) {
     const {n, lng, lat, r, cx, cy, cz, cosR, sinR, index} = state;
     const covered = new Uint8Array(n);
     let pairCount = 0, coveredCount = 0;
+
+    // disjoint-set forest over circles (union by size + path halving). Each proper
+    // pair unions its two endpoints; roots partition active circles into components.
+    const parent = new Int32Array(n);
+    const setSize = new Int32Array(n);
+    for (let i = 0; i < n; i++) { parent[i] = i; setSize[i] = 1; }
+    const find = (x) => {
+        while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+        return x;
+    };
+    const union = (a, b) => {
+        let ra = find(a), rb = find(b);
+        if (ra === rb) return;
+        if (setSize[ra] < setSize[rb]) { const t = ra; ra = rb; rb = t; }
+        parent[rb] = ra; setSize[ra] += setSize[rb];
+    };
 
     // growable interleaved point buffer (x,y,z) and pair buffer (i,j,baseId)
     let points = new Float64Array(1 << 16); // 3 slots/point
@@ -173,11 +196,23 @@ export function scan(state) {
             npairs++;
             pairCount++;
 
+            union(i, j); // same connected component of the union
+
             return false; // we account inline; keep within()'s result array empty
         });
     }
 
-    return {covered, pairCount, coveredCount, points, pointCount: np, pairs};
+    // compact roots → dense component ids over active circles
+    const component = new Int32Array(n).fill(-1);
+    let componentCount = 0;
+    for (let i = 0; i < n; i++) {
+        if (covered[i]) continue;
+        const root = find(i);
+        if (component[root] === -1) component[root] = componentCount++;
+        component[i] = component[root];
+    }
+
+    return {covered, pairCount, coveredCount, points, pointCount: np, pairs, component, componentCount};
 }
 
 /**
