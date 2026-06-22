@@ -117,6 +117,23 @@ export function scan(state) {
     const covered = new Uint8Array(n);
     let pairCount = 0, coveredCount = 0;
 
+    // §2a. Collapse coincident-center circles. Circles sharing a center (to CWELD
+    // precision in unit-vector space) are concentric, so the largest radius contains
+    // all the rest. Real data has many co-located tower sites (identical lng/lat,
+    // differing radius); equal-radius ones in particular slip past the §2 engulf test
+    // (cij rounds to just under cos(ρᵢ−ρⱼ)=1) and otherwise survive as degenerate thin
+    // lenses whose near-coincident intersection points break §4 completeness and the §5
+    // handoff. Circles are radius-descending (build), so the first id seen per cell is
+    // the largest — keep it, drop the rest. CWELD ≈ 6 μm: far below the nearest distinct
+    // real centers (>10 m apart), so this never merges genuinely separate circles.
+    const CWELD = 1e-9;
+    const centerCell = new Map();
+    for (let i = 0; i < n; i++) {
+        const key = Math.round(cx[i] / CWELD) + ',' + Math.round(cy[i] / CWELD) + ',' + Math.round(cz[i] / CWELD);
+        if (centerCell.has(key)) { covered[i] = 1; coveredCount++; }
+        else centerCell.set(key, i);
+    }
+
     // disjoint-set forest over circles (union by size + path halving). Each proper
     // pair unions its two endpoints; roots partition active circles into components.
     const parent = new Int32Array(n);
@@ -158,18 +175,25 @@ export function scan(state) {
                 return false;
             }
 
-            // proper intersection — solve for the two points
-            const det = 1 - cij * cij;                  // = |n|² = |cᵢ×cⱼ|²
-            const alpha = (cosRi - cij * cosRj) / det;
-            const beta = (cosRj - cij * cosRi) / det;
-            let g2 = (1 - alpha * alpha - beta * beta - 2 * alpha * beta * cij) / det;
-            if (g2 < 0) g2 = 0;                          // tangency / roundoff guard
-            const gamma = Math.sqrt(g2);
-
-            // n = cᵢ × cⱼ
+            // proper intersection — solve p± = α·cᵢ + β·cⱼ ± γ·n for the two points.
+            // n = cᵢ × cⱼ; |n|² = sin²d is computed from the cross product directly, NOT
+            // as 1−cij²: for close or small circles cij≈1 and 1−cij² cancels catastrophically
+            // (loses ~8 digits, throwing the points ~hundreds of m off and desyncing §4's
+            // bearings between the two circles). The α/β numerators are likewise rewritten
+            // as (cosRᵢ−cosRⱼ)+cosRⱼ·(1−cosd) with 1−cosd = 2sin²(d/2) to avoid the same
+            // cancellation in cosRᵢ−cij·cosRⱼ. This keeps points on-circle to ~1e-15.
             const nx = yi * zj - zi * yj;
             const ny = zi * xj - xi * zj;
             const nz = xi * yj - yi * xj;
+            const sin2d = nx * nx + ny * ny + nz * nz;   // = |cᵢ×cⱼ|² = sin²(angular dist)
+            const dAng = Math.atan2(Math.sqrt(sin2d), cij);
+            const sh = Math.sin(dAng / 2);
+            const oneMinusCosd = 2 * sh * sh;
+            const alpha = ((cosRi - cosRj) + cosRj * oneMinusCosd) / sin2d;
+            const beta = ((cosRj - cosRi) + cosRi * oneMinusCosd) / sin2d;
+            let g2 = (1 - alpha * alpha - beta * beta - 2 * alpha * beta * cij) / sin2d;
+            if (g2 < 0) g2 = 0;                          // tangency / roundoff guard
+            const gamma = Math.sqrt(g2);
 
             // mid = α·cᵢ + β·cⱼ ; p± = mid ± γ·n
             const mx = alpha * xi + beta * xj;
