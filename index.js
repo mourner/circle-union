@@ -4,6 +4,7 @@ import {within} from 'geoflatbush';
 const RAD = Math.PI / 180;
 const R = 6371; // mean Earth radius, km
 const TWO_PI = 2 * Math.PI;
+const WELD = 1e-9; // unit-vector grid for welding coincident intersection-point IDs (§5 stitch)
 
 /**
  * @typedef {Object} State
@@ -392,10 +393,26 @@ export function stitch(state, scanResult, arcResult) {
     const {points, pointCount, component} = scanResult;
     const {arcCount, arcCircle, arcThetaStart, arcThetaEnd, arcStartId, arcEndId} = arcResult;
 
-    // each intersection-point ID is the start of exactly one (non-full) arc
+    // Weld coincident point IDs. Near-coincident circles (co-located towers, ≠ radius)
+    // intersect a common neighbour at the *same* geometric location but, minted from
+    // distinct pairs, get distinct IDs — so the arc ending there and the arc starting
+    // there carry different integer IDs and the topological handoff fails. Snap every
+    // point to a fine grid (WELD ≈ 6 μm in unit-vector space) and route the handoff
+    // through a canonical ID per occupied cell. WELD sits on a wide stable plateau
+    // (1e-12…1e-7 all identical here); larger would start merging distinct vertices.
+    const canon = new Int32Array(pointCount);
+    const cell = new Map();
+    for (let id = 0; id < pointCount; id++) {
+        const p = id * 3;
+        const key = Math.round(points[p] / WELD) + ',' + Math.round(points[p + 1] / WELD) + ',' + Math.round(points[p + 2] / WELD);
+        const seen = cell.get(key);
+        if (seen === undefined) { cell.set(key, id); canon[id] = id; } else canon[id] = seen;
+    }
+
+    // each canonical point ID is the start of exactly one (non-full) arc
     const arcByStart = new Int32Array(pointCount).fill(-1);
     for (let k = 0; k < arcCount; k++) {
-        if (arcStartId[k] !== -1) arcByStart[arcStartId[k]] = k;
+        if (arcStartId[k] !== -1) arcByStart[canon[arcStartId[k]]] = k;
     }
 
     const visited = new Uint8Array(arcCount);
@@ -441,7 +458,7 @@ export function stitch(state, scanResult, arcResult) {
             if (!havePoint0) { p0x = ax; p0y = ay; p0z = az; havePoint0 = true; }
             else area += triExcess(p0x, p0y, p0z, ax, ay, az, bx, by, bz);
 
-            const next = arcByStart[arcEndId[k]];
+            const next = arcByStart[canon[arcEndId[k]]];
             if (next === k0) { closed = true; break; }
             // a dead end (−1) or an arc already consumed means the shared-ID handoff broke —
             // only happens on near-coincident circles (duplicate point IDs); stop, don't corrupt.
