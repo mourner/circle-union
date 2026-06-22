@@ -355,6 +355,135 @@ export function arcs(state, scanResult) {
     return {arcCount, fullCount, arcCircle, arcThetaStart, arcThetaEnd, arcStartId, arcEndId};
 }
 
+/**
+ * §5. Stitch boundary arcs into closed rings, and label each ring with the data
+ * §7 needs *before* sampling inflates the vertex count:
+ *   - **connected-component id** (from the §3 union-find) — the component of any
+ *     of the ring's arcs' circles (all arcs in a ring share one component);
+ *   - **signed spherical area** — analytic closed form summed over the arcs, used
+ *     for orientation (shell vs hole) under RFC 7946 winding.
+ *
+ * Topology: every CCW-oriented arc keeps the disk interior on its left, so each
+ * §3 intersection point is the *end* of exactly one arc and the *start* of exactly
+ * one other (on the other circle). We map point-ID → the arc starting there, then
+ * walk end→start handoffs until the ring closes. Full-circle arcs (`startId = −1`)
+ * are standalone single-arc rings (an isolated disk's whole boundary).
+ *
+ * Area decomposition (exact on the sphere): ring area = geodesic polygon through
+ * the arc endpoints (fan of signed spherical triangles from the first vertex) plus,
+ * per arc, the segment between the small-circle arc and its chord —
+ * `Δθ·(1 − cosρ) − triExcess(c, A, B)` (cap sector minus geodesic triangle). A full
+ * circle's ring is the whole cap, `2π·(1 − cosρ)`. Shells come out CCW (positive),
+ * holes CW (negative).
+ *
+ * @param {State} state
+ * @param {{points: Float64Array, pointCount: number, component: Int32Array}} scanResult
+ * @param {{arcCount: number, arcCircle: Int32Array, arcThetaStart: Float64Array,
+ *   arcThetaEnd: Float64Array, arcStartId: Int32Array, arcEndId: Int32Array}} arcResult
+ * `openRings` counts rings whose end→start handoff broke (only on near-coincident
+ * circles, which mint duplicate point IDs at one location — a Step 7 robustness item);
+ * 0 on generic-position input.
+ *
+ * @returns {{ringCount: number, ringArcs: Int32Array, ringStart: Int32Array,
+ *   ringComponent: Int32Array, ringArea: Float64Array, openRings: number}}
+ */
+export function stitch(state, scanResult, arcResult) {
+    const {cx, cy, cz, cosR} = state;
+    const {points, pointCount, component} = scanResult;
+    const {arcCount, arcCircle, arcThetaStart, arcThetaEnd, arcStartId, arcEndId} = arcResult;
+
+    // each intersection-point ID is the start of exactly one (non-full) arc
+    const arcByStart = new Int32Array(pointCount).fill(-1);
+    for (let k = 0; k < arcCount; k++) {
+        if (arcStartId[k] !== -1) arcByStart[arcStartId[k]] = k;
+    }
+
+    const visited = new Uint8Array(arcCount);
+    const ringArcs = new Int32Array(arcCount); // arc indices, grouped by ring (each arc written once)
+    let w = 0;                                 // write cursor into ringArcs
+    const ringStart = [0];                     // ring r spans ringArcs[ringStart[r]..ringStart[r+1])
+    /** @type {number[]} */ const ringComponent = [];
+    /** @type {number[]} */ const ringArea = [];
+    let openRings = 0;                         // rings whose end→start handoff broke (degenerate input)
+
+    for (let k0 = 0; k0 < arcCount; k0++) {
+        if (visited[k0]) continue;
+        const comp = component[arcCircle[k0]];
+
+        if (arcStartId[k0] === -1) { // full circle → standalone ring (whole cap)
+            visited[k0] = 1;
+            ringArcs[w++] = k0;
+            ringComponent.push(comp);
+            ringArea.push(TWO_PI * (1 - cosR[arcCircle[k0]]));
+            ringStart.push(w);
+            continue;
+        }
+
+        let area = 0;
+        let p0x = 0, p0y = 0, p0z = 0, havePoint0 = false;
+        let k = k0, closed = false;
+        for (;;) {
+            visited[k] = 1;
+            ringArcs[w++] = k;
+
+            const sp = arcStartId[k] * 3, ep = arcEndId[k] * 3;
+            const ax = points[sp], ay = points[sp + 1], az = points[sp + 2];
+            const bx = points[ep], by = points[ep + 1], bz = points[ep + 2];
+            const c = arcCircle[k];
+
+            // segment between arc and its chord: cap sector Δθ(1−cosρ) minus geodesic triangle
+            let dth = arcThetaEnd[k] - arcThetaStart[k];
+            if (dth < 0) dth += TWO_PI;
+            area += dth * (1 - cosR[c]);
+            area -= triExcess(cx[c], cy[c], cz[c], ax, ay, az, bx, by, bz);
+
+            // geodesic polygon through endpoints, as a fan from the ring's first vertex
+            if (!havePoint0) { p0x = ax; p0y = ay; p0z = az; havePoint0 = true; }
+            else area += triExcess(p0x, p0y, p0z, ax, ay, az, bx, by, bz);
+
+            const next = arcByStart[arcEndId[k]];
+            if (next === k0) { closed = true; break; }
+            // a dead end (−1) or an arc already consumed means the shared-ID handoff broke —
+            // only happens on near-coincident circles (duplicate point IDs); stop, don't corrupt.
+            if (next === -1 || visited[next]) break;
+            k = next;
+        }
+        if (!closed) openRings++;
+
+        ringComponent.push(comp);
+        ringArea.push(area);
+        ringStart.push(w);
+    }
+
+    return {
+        ringCount: ringStart.length - 1,
+        ringArcs,
+        ringStart: Int32Array.from(ringStart),
+        ringComponent: Int32Array.from(ringComponent),
+        ringArea: Float64Array.from(ringArea),
+        openRings,
+    };
+}
+
+/**
+ * Signed area of the spherical triangle (a, b, c) of unit vectors — positive when
+ * a→b→c winds CCW seen from outside. Van Oosterom–Strackee: numerically stable, no
+ * `acos`, sign carried by the triple product.
+ * @param {number} ax @param {number} ay @param {number} az
+ * @param {number} bx @param {number} by @param {number} bz
+ * @param {number} cx @param {number} cy @param {number} cz
+ */
+function triExcess(ax, ay, az, bx, by, bz, cx, cy, cz) {
+    const crx = by * cz - bz * cy;
+    const cry = bz * cx - bx * cz;
+    const crz = bx * cy - by * cx;
+    const triple = ax * crx + ay * cry + az * crz;
+    const ab = ax * bx + ay * by + az * bz;
+    const bc = bx * cx + by * cy + bz * cz;
+    const ca = cx * ax + cy * ay + cz * az;
+    return 2 * Math.atan2(triple, 1 + ab + bc + ca);
+}
+
 /** @param {Int32Array} a @param {number} cap */
 function grow32(a, cap) { const g = new Int32Array(cap); g.set(a); return g; }
 /** @param {Float64Array} a @param {number} cap */
