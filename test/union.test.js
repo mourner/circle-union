@@ -17,7 +17,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {fileURLToPath} from 'node:url';
 import Flatbush from 'flatbush';
 import {within} from 'geoflatbush';
 import {CircleUnion} from '../index.js';
@@ -27,18 +26,15 @@ const R = 6371; // mean Earth radius, km
 const TWO_PI = 2 * Math.PI;
 
 // The OpenCelliD Ukraine cell-tower sample (~23k disks): the workload the library was built
-// for. CSV columns: radio,mcc,net,area,cell,unit,lon,lat,range,… → SoA arrays (r in km).
+// for. Trimmed to the only columns we use — `lon,lat,range_m` — one tower per line.
 function loadCells() {
-    const path = fileURLToPath(new URL('./fixtures/ukraine-cell-id.csv', import.meta.url));
-    const lines = readFileSync(path, 'utf8').split('\n');
+    const lines = readFileSync(new URL('./fixtures/ukraine-cell-id.csv', import.meta.url), 'utf8').split('\n');
     const lng = new Float64Array(lines.length), lat = new Float64Array(lines.length), r = new Float64Array(lines.length);
     let n = 0;
     for (const line of lines) {
         if (!line) continue;
         const c = line.split(',');
-        const rangeM = +c[8];
-        if (!rangeM) continue;
-        lng[n] = +c[6]; lat[n] = +c[7]; r[n] = rangeM / 1000; // m → km
+        lng[n] = +c[0]; lat[n] = +c[1]; r[n] = +c[2] / 1000; // m → km
         n++;
     }
     return {lng: lng.subarray(0, n), lat: lat.subarray(0, n), r: r.subarray(0, n)};

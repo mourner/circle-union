@@ -42,10 +42,8 @@ async function load() {
     const lng = [], lat = [], r = [];
     for (const line of lines) {
         if (!line) continue;
-        const c = line.split(',');
-        const rangeM = +c[8];
-        if (!rangeM) continue;
-        const clng = +c[6], clat = +c[7], radiusKm = rangeM / 1000;
+        const c = line.split(','); // lon,lat,range_m
+        const clng = +c[0], clat = +c[1], radiusKm = +c[2] / 1000;
         lng.push(clng); lat.push(clat); r.push(radiusKm);
         // fewer segments for tiny circles, more for big ones
         const steps = radiusKm > 10 ? 48 : radiusKm > 2 ? 24 : 12;
