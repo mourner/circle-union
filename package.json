@@ -13,13 +13,22 @@
     "circle-union.js"
   ],
   "scripts": {
-    "test": "tsc && node --test",
+    "pretest": "eslint . && tsc",
+    "test": "node --test test/*.test.js",
+    "bench": "node bench/bench.js",
+    "preview": "node preview/generate.js",
     "build": "rolldown index.js -o circle-union.js -n CircleUnion -f umd"
   },
-  "author": "Vladimir Agafonkin",
+  "author": "Volodymyr Agafonkin",
   "license": "ISC",
   "dependencies": {
-    "flatbush": "file:../flatbush",
-    "geoflatbush": "file:../geoflatbush"
+    "flatbush": "^4.6.2",
+    "geoflatbush": "^2.2.1"
+  },
+  "devDependencies": {
+    "eslint": "^10.5.0",
+    "eslint-config-mourner": "^5.0.1",
+    "rolldown": "^1.1.2",
+    "typescript": "^6.0.3"
   }
 }

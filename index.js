@@ -4,7 +4,6 @@ import {within} from 'geoflatbush';
 const RAD = Math.PI / 180;
 const R = 6371; // mean Earth radius, km
 const TWO_PI = 2 * Math.PI;
-const COINCIDENT = 1 - 1e-13; // cos(angular dist) above which two centers are treated as co-located (§2)
 
 /**
  * @typedef {Object} State
@@ -158,75 +157,81 @@ export function scan(state) {
         else { covered[i] = 1; coveredCount++; }            // same centre as an earlier, larger circle
     }
 
+    // Per-owner scratch shared with the visitor below. Declared once (not inside the
+    // loop) so the closure isn't recreated each iteration; within() invokes it
+    // synchronously, so reusing the same function across owners is safe and alloc-free.
+    let oi = 0, oxi = 0, oyi = 0, ozi = 0, ocosRi = 0, osinRi = 0;
+
+    const visit = (j) => {
+        if (j <= oi || covered[j]) return false; // self, the larger owner, or already-dropped
+        const xj = cx[j], yj = cy[j], zj = cz[j], cosRj = cosR[j], sinRj = sinR[j];
+        const cij = oxi * xj + oyi * yj + ozi * zj; // = cos(angular distance)
+        const cosProd = ocosRi * cosRj;
+        const sinProd = osinRi * sinRj;
+        if (cij <= cosProd - sinProd) return false; // disjoint: cij ≤ cos(ρi+ρj)
+
+        if (cij >= cosProd + sinProd) {             // engulf: cij ≥ cos(ρi−ρj), i ⊇ j
+            covered[j] = 1;
+            coveredCount++;
+            return false;
+        }
+
+        // proper intersection — solve p± = α·cᵢ + β·cⱼ ± γ·n for the two points.
+        // n = cᵢ × cⱼ; |n|² = sin²d is computed from the cross product directly, NOT
+        // as 1−cij²: for close or small circles cij≈1 and 1−cij² cancels catastrophically
+        // (loses ~8 digits, throwing the points ~hundreds of m off and desyncing §4's
+        // bearings between the two circles). The α/β numerators are likewise rewritten
+        // as (cosRᵢ−cosRⱼ)+cosRⱼ·(1−cosd) with 1−cosd = 2sin²(d/2) to avoid the same
+        // cancellation in cosRᵢ−cij·cosRⱼ. This keeps points on-circle to ~1e-15.
+        const nx = oyi * zj - ozi * yj;
+        const ny = ozi * xj - oxi * zj;
+        const nz = oxi * yj - oyi * xj;
+        const sin2d = nx * nx + ny * ny + nz * nz;   // = |cᵢ×cⱼ|² = sin²(angular dist)
+        const dAng = Math.atan2(Math.sqrt(sin2d), cij);
+        const sh = Math.sin(dAng / 2);
+        const oneMinusCosd = 2 * sh * sh;
+        const alpha = ((ocosRi - cosRj) + cosRj * oneMinusCosd) / sin2d;
+        const beta = ((cosRj - ocosRi) + ocosRi * oneMinusCosd) / sin2d;
+        let g2 = (1 - alpha * alpha - beta * beta - 2 * alpha * beta * cij) / sin2d;
+        if (g2 < 0) g2 = 0;                          // tangency / roundoff guard
+        const gamma = Math.sqrt(g2);
+
+        // mid = α·cᵢ + β·cⱼ ; p± = mid ± γ·n
+        const mx = alpha * oxi + beta * xj;
+        const my = alpha * oyi + beta * yj;
+        const mz = alpha * ozi + beta * zj;
+        const gx = gamma * nx, gy = gamma * ny, gz = gamma * nz;
+
+        if (np * 3 + 6 > points.length) {
+            const grown = new Float64Array(points.length * 2);
+            grown.set(points); points = grown;
+        }
+        if (npairs * 3 + 3 > pairs.length) {
+            const grown = new Int32Array(pairs.length * 2);
+            grown.set(pairs); pairs = grown;
+        }
+
+        const baseId = np;
+        let p = np * 3;
+        points[p++] = mx + gx; points[p++] = my + gy; points[p++] = mz + gz; // p+ = baseId
+        points[p++] = mx - gx; points[p++] = my - gy; points[p] = mz - gz;   // p- = baseId+1
+        np += 2;
+
+        let q = npairs * 3;
+        pairs[q++] = oi; pairs[q++] = j; pairs[q] = baseId;
+        npairs++;
+        pairCount++;
+
+        union(oi, j); // same connected component of the union
+
+        return false; // we account inline; keep within()'s result array empty
+    };
+
     for (let i = 0; i < n; i++) {
         if (covered[i]) continue;
-        const ri = r[i];
-        const xi = cx[i], yi = cy[i], zi = cz[i], cosRi = cosR[i], sinRi = sinR[i];
-
-        within(index, lng[i], lat[i], 2 * ri, (j) => {
-            if (j <= i || covered[j]) return false; // self, the larger owner, or already-dropped
-            const xj = cx[j], yj = cy[j], zj = cz[j], cosRj = cosR[j], sinRj = sinR[j];
-            const cij = xi * xj + yi * yj + zi * zj; // = cos(angular distance)
-            const cosProd = cosRi * cosRj;
-            const sinProd = sinRi * sinRj;
-            if (cij <= cosProd - sinProd) return false; // disjoint: cij ≤ cos(ρi+ρj)
-
-            if (cij >= cosProd + sinProd) {             // engulf: cij ≥ cos(ρi−ρj), i ⊇ j
-                covered[j] = 1;
-                coveredCount++;
-                return false;
-            }
-
-            // proper intersection — solve p± = α·cᵢ + β·cⱼ ± γ·n for the two points.
-            // n = cᵢ × cⱼ; |n|² = sin²d is computed from the cross product directly, NOT
-            // as 1−cij²: for close or small circles cij≈1 and 1−cij² cancels catastrophically
-            // (loses ~8 digits, throwing the points ~hundreds of m off and desyncing §4's
-            // bearings between the two circles). The α/β numerators are likewise rewritten
-            // as (cosRᵢ−cosRⱼ)+cosRⱼ·(1−cosd) with 1−cosd = 2sin²(d/2) to avoid the same
-            // cancellation in cosRᵢ−cij·cosRⱼ. This keeps points on-circle to ~1e-15.
-            const nx = yi * zj - zi * yj;
-            const ny = zi * xj - xi * zj;
-            const nz = xi * yj - yi * xj;
-            const sin2d = nx * nx + ny * ny + nz * nz;   // = |cᵢ×cⱼ|² = sin²(angular dist)
-            const dAng = Math.atan2(Math.sqrt(sin2d), cij);
-            const sh = Math.sin(dAng / 2);
-            const oneMinusCosd = 2 * sh * sh;
-            const alpha = ((cosRi - cosRj) + cosRj * oneMinusCosd) / sin2d;
-            const beta = ((cosRj - cosRi) + cosRi * oneMinusCosd) / sin2d;
-            let g2 = (1 - alpha * alpha - beta * beta - 2 * alpha * beta * cij) / sin2d;
-            if (g2 < 0) g2 = 0;                          // tangency / roundoff guard
-            const gamma = Math.sqrt(g2);
-
-            // mid = α·cᵢ + β·cⱼ ; p± = mid ± γ·n
-            const mx = alpha * xi + beta * xj;
-            const my = alpha * yi + beta * yj;
-            const mz = alpha * zi + beta * zj;
-            const gx = gamma * nx, gy = gamma * ny, gz = gamma * nz;
-
-            if (np * 3 + 6 > points.length) {
-                const grown = new Float64Array(points.length * 2);
-                grown.set(points); points = grown;
-            }
-            if (npairs * 3 + 3 > pairs.length) {
-                const grown = new Int32Array(pairs.length * 2);
-                grown.set(pairs); pairs = grown;
-            }
-
-            const baseId = np;
-            let p = np * 3;
-            points[p++] = mx + gx; points[p++] = my + gy; points[p++] = mz + gz; // p+ = baseId
-            points[p++] = mx - gx; points[p++] = my - gy; points[p++] = mz - gz; // p- = baseId+1
-            np += 2;
-
-            let q = npairs * 3;
-            pairs[q++] = i; pairs[q++] = j; pairs[q++] = baseId;
-            npairs++;
-            pairCount++;
-
-            union(i, j); // same connected component of the union
-
-            return false; // we account inline; keep within()'s result array empty
-        });
+        oi = i;
+        oxi = cx[i]; oyi = cy[i]; ozi = cz[i]; ocosRi = cosR[i]; osinRi = sinR[i];
+        within(index, lng[i], lat[i], 2 * r[i], visit);
     }
 
     // compact roots → dense component ids over active circles
@@ -292,8 +297,11 @@ export function arcs(state, scanResult) {
         let dab = thB - thA; if (dab < 0) dab += TWO_PI;
         let dam = mid - thA; if (dam < 0) dam += TWO_PI;
         let s, e, sId, eId;
-        if (dam <= dab) { s = thA; e = thB; sId = idA; eId = idB; }
-        else { s = thB; e = thA; sId = idB; eId = idA; }
+        if (dam <= dab) {
+            s = thA; e = thB; sId = idA; eId = idB;
+        } else {
+            s = thB; e = thA; sId = idB; eId = idA;
+        }
 
         if (s > e) baseDepth[c]++; // interval wraps the seam
         evTheta[ne] = s; evDelta[ne] = 1; evId[ne] = sId; evCircle[ne] = c; ne++;
@@ -367,13 +375,23 @@ export function arcs(state, scanResult) {
             const k = order[a];
             if (evDelta[k] === 1) {
                 if (depth === 0) {
-                    if (haveGap) { pushArc(c, gapTheta, evTheta[k], gapId, evId[k]); haveGap = false; }
-                    else { seamTheta = evTheta[k]; seamId = evId[k]; haveSeam = true; }
+                    if (haveGap) {
+                        pushArc(c, gapTheta, evTheta[k], gapId, evId[k]);
+                        haveGap = false;
+                    } else {
+                        seamTheta = evTheta[k];
+                        seamId = evId[k];
+                        haveSeam = true;
+                    }
                 }
                 depth++;
             } else {
                 depth--;
-                if (depth === 0) { gapTheta = evTheta[k]; gapId = evId[k]; haveGap = true; }
+                if (depth === 0) {
+                    gapTheta = evTheta[k];
+                    gapId = evId[k];
+                    haveGap = true;
+                }
             }
         }
         if (haveGap && haveSeam) pushArc(c, gapTheta, seamTheta, gapId, seamId); // arc straddling the seam
@@ -466,8 +484,11 @@ export function stitch(state, scanResult, arcResult) {
             area -= triExcess(cx[c], cy[c], cz[c], ax, ay, az, bx, by, bz);
 
             // geodesic polygon through endpoints, as a fan from the ring's first vertex
-            if (!havePoint0) { p0x = ax; p0y = ay; p0z = az; havePoint0 = true; }
-            else area += triExcess(p0x, p0y, p0z, ax, ay, az, bx, by, bz);
+            if (!havePoint0) {
+                p0x = ax; p0y = ay; p0z = az; havePoint0 = true;
+            } else {
+                area += triExcess(p0x, p0y, p0z, ax, ay, az, bx, by, bz);
+            }
 
             const next = arcByStartId[arcEndId[k]];
             if (next === k0) { closed = true; break; }
@@ -533,8 +554,9 @@ export function polygons(state, scanResult, arcResult, ringResult, options = {})
     const {componentCount} = scanResult;
     const {arcCircle, arcThetaStart, arcThetaEnd, arcStartId} = arcResult;
     const {ringCount, ringArcs, ringStart, ringComponent, ringArea} = ringResult;
-    const tol = options.tolerance > 0 ? options.tolerance : 0.005;      // km, ~5 m sagitta
-    const minPts = options.minPoints > 0 ? options.minPoints : 24;      // floor on points per full circle
+    const {tolerance = 0.005, minPoints = 24} = options;
+    const tol = tolerance > 0 ? tolerance : 0.005;      // km, ~5 m sagitta
+    const minPts = minPoints > 0 ? minPoints : 24;      // floor on points per full circle
 
     // §6 — sample each stitched ring into a closed [lng, lat] vertex ring
     const rings = new Array(ringCount);
