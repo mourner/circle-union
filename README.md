@@ -60,22 +60,29 @@ const geojson = u.geojson({tolerance: 0.01, minPoints: 32});
 
 #### `u.arcs()`
 
-Returns the exact, resolution-independent arc topology behind the union, as nested arrays:
+Returns the exact, resolution-independent arc topology behind the union, as nested GeoJSON-like arrays:
 
 ```
-[polygon, ...]        polygon = [ring, ...]
-ring = [arc, ...]     arc = [lng, lat, radius, startAngle, endAngle]
+arc = [lng, lat, radius, startAngle, endAngle]
+ring = [arc, ...]
+polygon = [ring, ...]
+result = [polygon, ...]
 ```
 
 Use this if you want to render or measure the boundary without sampling it into line segments. Both `arcs()` and `geojson()` cache their work, so calling them repeatedly (or together) is cheap.
 
 ## Performance
 
-Running `npm run bench` on a MacBook Pro (M1 Pro, Node v24), computing the full union of an [OpenCelliD](https://opencellid.org) export of ~23.5k cell towers over Ukraine:
+Union of an [OpenCelliD](https://opencellid.org) export of cell towers over Ukraine into a GeoJSON `MultiPolygon`, on a MacBook Pro (M1 Pro, Node v24) — against general polygon-union approaches over matching 24-segment circles: [martinez-polygon-clipping](https://github.com/w8r/martinez) (a fast clipping library) and the usual `turf.circle` + `turf.union`:
 
-bench | circle-union
---- | ---
-union of 23,467 circles → GeoJSON | 18.5ms
+circles | circle-union | martinez | turf
+--: | --: | --: | --:
+1,000 | 1.8 ms | 130 ms | 870 ms
+4,000 | 4.8 ms | 560 ms | 9.7 s
+8,000 | 6.9 ms | 930 ms | 39 s
+23,467 | **18.5 ms** | 1.9 s | out of memory
+
+Working directly with boundary arcs instead of densified polygons keeps the cost roughly linear: circle-union stays ~100× ahead of even a fast general clipper, while `turf` blows up and runs out of memory before it can finish the full set.
 
 ## Development
 
