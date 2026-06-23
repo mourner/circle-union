@@ -81,10 +81,10 @@ Union of an [OpenCelliD](https://opencellid.org) export of cell towers over Ukra
 
 circles | circle-union | martinez | turf
 --: | --: | --: | --:
-1,000 | 1.8 ms | 130 ms | 870 ms
-4,000 | 4.8 ms | 560 ms | 9.7 s
-8,000 | 6.9 ms | 930 ms | 39 s
-23,467 | **18.5 ms** | 1.9 s | out of memory
+1,000 | 0.7 ms | 130 ms | 870 ms
+4,000 | 2.6 ms | 560 ms | 9.7 s
+8,000 | 6.8 ms | 930 ms | 39 s
+23,467 | **16 ms** | 1.9 s | out of memory
 
 The cost stays roughly linear because the boundary of a union of disks is itself only `O(n)` arcs, and a spatial index keeps finding which circles actually interact close to linear too — no densified geometry, no all-pairs overlay. circle-union stays ~100× ahead of even a fast general clipper, while `turf` blows up and runs out of memory before it can finish the full set.
 
