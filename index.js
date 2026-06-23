@@ -494,6 +494,104 @@ export function stitch(state, scanResult, arcResult) {
 }
 
 /**
+ * §6–§7. Sample boundary arcs into vertices and assemble the GeoJSON `MultiPolygon`.
+ *
+ * §6 — each surviving arc is sampled along the exact geodesic circle
+ *   `p(θ) = cosρ·c + sinρ·(cosθ·u + sinθ·v)` (not a chord of the centre), then projected
+ *   to `[lng, lat]`. The step adapts to circle size: it is the largest `Δθ` whose chord
+ *   stays within `tolerance` km of the true arc (sagitta `r·(1−cos(Δθ/2)) ≤ tol`, so
+ *   `Δθ_max = 2·acos(1 − tol/r)`), floored at `minPoints` per full turn so even a tiny
+ *   circle stays round (never collapses to a coarse few-gon that reads as a shrunken
+ *   radius). A 30 km circle gets many points from the sagitta bound, a 100 m one gets the
+ *   floor — instead of a radius-blind fixed count that over-samples the small ones.
+ *   Consecutive arcs share an endpoint by §3 ID, so each arc emits its start + interior
+ *   samples and *omits* its end (the next arc's start); the ring is closed by repeating v0.
+ *
+ * §7 — nesting is connectivity, not geometry: every ring already carries its §3
+ *   component id and a signed spherical area. One `Polygon` per component — the single
+ *   positive-area ring is the shell, negative-area rings are its holes. Our CCW traversal
+ *   makes shells come out CCW and holes CW, which is exactly RFC 7946 winding, so no
+ *   reversal is needed. An isolated disk and an island-in-a-hole are each their own
+ *   component → their own `Polygon`, which is what RFC 7946 wants.
+ *
+ * Antimeridian/pole straddles are not yet split (Step 7 hardening); regional data
+ * (e.g. the Ukraine workload) never triggers them.
+ *
+ * @param {State} state
+ * @param {{componentCount: number}} scanResult
+ * @param {{arcCircle: Int32Array, arcThetaStart: Float64Array, arcThetaEnd: Float64Array,
+ *   arcStartId: Int32Array}} arcResult
+ * @param {{ringCount: number, ringArcs: Int32Array, ringStart: Int32Array,
+ *   ringComponent: Int32Array, ringArea: Float64Array}} ringResult
+ * @param {{tolerance?: number, minPoints?: number}} [options] `tolerance`: max chord
+ *   sagitta in km (default 0.005 = 5 m); `minPoints`: floor on samples per full circle
+ *   (default 24, keeps small circles round)
+ * @returns {{type: 'MultiPolygon', coordinates: number[][][][]}}
+ */
+export function polygons(state, scanResult, arcResult, ringResult, options = {}) {
+    const {r: radius, cx, cy, cz, ux, uy, uz, vx, vy, vz, cosR, sinR} = state;
+    const {componentCount} = scanResult;
+    const {arcCircle, arcThetaStart, arcThetaEnd, arcStartId} = arcResult;
+    const {ringCount, ringArcs, ringStart, ringComponent, ringArea} = ringResult;
+    const tol = options.tolerance > 0 ? options.tolerance : 0.005;      // km, ~5 m sagitta
+    const minPts = options.minPoints > 0 ? options.minPoints : 24;      // floor on points per full circle
+
+    // §6 — sample each stitched ring into a closed [lng, lat] vertex ring
+    const rings = new Array(ringCount);
+    for (let r = 0; r < ringCount; r++) {
+        const ring = [];
+        for (let a = ringStart[r]; a < ringStart[r + 1]; a++) {
+            const k = ringArcs[a], c = arcCircle[k];
+            const cr = cosR[c], sr = sinR[c];
+
+            // sweep angle of this arc; a full circle (startId −1) spans the whole 2π
+            const full = arcStartId[k] === -1;
+            const t0 = full ? 0 : arcThetaStart[k];
+            let dth = full ? TWO_PI : arcThetaEnd[k] - arcThetaStart[k];
+            if (dth < 0) dth += TWO_PI;
+
+            // largest step whose chord stays within `tol` km of the arc, sized to this
+            // circle's radius; emit start + interiors, skip the end (next arc's start, shared
+            // by §3 ID — closure repeats v0). A full circle still needs ≥3 vertices to be valid.
+            const maxStep = 2 * Math.acos(Math.max(-1, 1 - tol / radius[c]));
+            // never coarser than `minPts` per full turn, so even tiny circles stay round
+            const segs = Math.max(1, Math.ceil(dth / maxStep), Math.ceil(minPts * dth / TWO_PI));
+            const dt = dth / segs;
+            for (let s = 0; s < segs; s++) {
+                const th = t0 + s * dt, cth = Math.cos(th), sth = Math.sin(th);
+                const px = cr * cx[c] + sr * (cth * ux[c] + sth * vx[c]);
+                const py = cr * cy[c] + sr * (cth * uy[c] + sth * vy[c]);
+                let pz = cr * cz[c] + sr * (cth * uz[c] + sth * vz[c]);
+                if (pz > 1) pz = 1; else if (pz < -1) pz = -1; // asin domain guard
+                ring.push([Math.atan2(py, px) / RAD, Math.asin(pz) / RAD]);
+            }
+        }
+        if (ring.length) ring.push(ring[0].slice()); // close the ring (RFC 7946)
+        rings[r] = ring;
+    }
+
+    // §7 — group rings by component: positive-area ring is the shell, negatives are its holes
+    const shellOf = new Int32Array(componentCount).fill(-1);
+    /** @type {number[][]} */ const holesOf = [];
+    for (let comp = 0; comp < componentCount; comp++) holesOf.push([]);
+    for (let r = 0; r < ringCount; r++) {
+        const comp = ringComponent[r];
+        if (ringArea[r] >= 0) shellOf[comp] = r; else holesOf[comp].push(r);
+    }
+
+    const coordinates = [];
+    for (let comp = 0; comp < componentCount; comp++) {
+        const sr = shellOf[comp];
+        if (sr === -1) continue; // a component with no shell would be a §5 inconsistency
+        const poly = [rings[sr]];
+        for (const hr of holesOf[comp]) poly.push(rings[hr]);
+        coordinates.push(poly);
+    }
+
+    return {type: 'MultiPolygon', coordinates};
+}
+
+/**
  * Signed area of the spherical triangle (a, b, c) of unit vectors — positive when
  * a→b→c winds CCW seen from outside. Van Oosterom–Strackee: numerically stable, no
  * `acos`, sign carried by the triple product.
