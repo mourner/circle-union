@@ -4,6 +4,8 @@ A really fast library for computing the **union of geographic circles** as cover
 
 Given `N` points each with a radius, it computes their combined coverage area as a GeoJSON `MultiPolygon` — shells with holes — in milliseconds, even for tens of thousands of circles. Useful for things like cell-tower coverage, service-area maps, sensor ranges, or any "what's within `r` km of these points" question.
 
+![](circle-union.jpg)
+
 Rather than buffering each circle into a many-sided polygon and running a general-purpose boolean union, it works directly with the **arcs** that bound a union of disks — whose complexity is only `O(n)` — and does all geometry on the unit sphere. That makes it both fast and geodesic-exact: no projection distortion, and no special-casing around the antimeridian or the poles.
 
 [![Build Status](https://github.com/mourner/circle-union/actions/workflows/ci.yml/badge.svg)](https://github.com/mourner/circle-union/actions) [![Simply Awesome](https://img.shields.io/badge/simply-awesome-brightgreen.svg)](https://github.com/mourner/projects)
@@ -84,7 +86,7 @@ circles | circle-union | martinez | turf
 8,000 | 6.9 ms | 930 ms | 39 s
 23,467 | **18.5 ms** | 1.9 s | out of memory
 
-Working directly with boundary arcs instead of densified polygons keeps the cost roughly linear: circle-union stays ~100× ahead of even a fast general clipper, while `turf` blows up and runs out of memory before it can finish the full set.
+The cost stays roughly linear because the boundary of a union of disks is itself only `O(n)` arcs, and a spatial index keeps finding which circles actually interact close to linear too — no densified geometry, no all-pairs overlay. circle-union stays ~100× ahead of even a fast general clipper, while `turf` blows up and runs out of memory before it can finish the full set.
 
 ## Development
 
