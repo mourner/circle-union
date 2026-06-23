@@ -72,7 +72,7 @@ async function load() {
     const t0 = performance.now();
     const u = new CircleUnion(lng.length);
     for (let i = 0; i < lng.length; i++) u.add(lng[i], lat[i], r[i]);
-    const geometry = u.finish();
+    const geometry = u.geojson();
     const ms = performance.now() - t0;
 
     let vertices = 0;

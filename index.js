@@ -18,8 +18,8 @@ const TWO_PI = 2 * Math.PI;
 /**
  * Union of geographic disks. A Flatbush-style builder: reserve a circle count,
  * `add` each circle, then read the result as exact arc topology (`arcs()`) or
- * sampled GeoJSON (`finish()`). The heavy pipeline (§0–§6) runs once on the first
- * read and is cached; only `finish`'s sampling step re-runs per call.
+ * sampled GeoJSON (`geojson()`). The heavy pipeline (§0–§6) runs once on the first
+ * read and is cached; only `geojson`'s sampling step re-runs per call.
  */
 export class CircleUnion {
     /** @param {number} numItems number of circles to reserve space for */
@@ -77,30 +77,11 @@ export class CircleUnion {
      *   vertices per full circle (default 24).
      * @returns {{type: 'MultiPolygon', coordinates: number[][][][]}}
      */
-    finish(options) {
+    geojson(options) {
         this._compute();
         return sample(/** @type {Topology} */ (this._topology), options);
     }
 }
-
-/**
- * @typedef {Object} State
- * @property {number} n
- * @property {Float64Array} lng
- * @property {Float64Array} lat
- * @property {Float64Array} r       radius in km
- * @property {Float64Array} cx
- * @property {Float64Array} cy
- * @property {Float64Array} cz      center unit vectors
- * @property {Float64Array} cosR
- * @property {Float64Array} sinR    cos/sin of angular radius ρ = r/R
- * @property {Float64Array} ux
- * @property {Float64Array} uy      local east unit vector (tangent frame); z-component ≡ 0
- * @property {Float64Array} vx
- * @property {Float64Array} vy
- * @property {Float64Array} vz      local north unit vector (tangent frame)
- * @property {Flatbush} index
- */
 
 /**
  * Setup. Sorts circles by radius descending so the "larger circle owns the pair"
@@ -111,7 +92,6 @@ export class CircleUnion {
  * @param {Float64Array} lng
  * @param {Float64Array} lat
  * @param {Float64Array} r radius in km
- * @returns {State}
  */
 function build(lng, lat, r) {
     const n = lng.length;
@@ -124,13 +104,13 @@ function build(lng, lat, r) {
     const slng = new Float64Array(n);
     const slat = new Float64Array(n);
     const sr = new Float64Array(n);
-    const cx = new Float64Array(n);
+    const cx = new Float64Array(n); // center unit vectors
     const cy = new Float64Array(n);
     const cz = new Float64Array(n);
-    const cosR = new Float64Array(n);
+    const cosR = new Float64Array(n); // cos/sin of angular radius ρ = r/R
     const sinR = new Float64Array(n);
-    const ux = new Float64Array(n), uy = new Float64Array(n); // east; uz ≡ 0, not stored
-    const vx = new Float64Array(n), vy = new Float64Array(n), vz = new Float64Array(n);
+    const ux = new Float64Array(n), uy = new Float64Array(n); // local east unit vector (tangent frame)
+    const vx = new Float64Array(n), vy = new Float64Array(n), vz = new Float64Array(n); // local north unit vector (tangent frame)
 
     const index = new Flatbush(n);
 
@@ -184,7 +164,7 @@ function build(lng, lat, r) {
  * `component` holds a compacted component id (0…componentCount−1) per active
  * circle; engulfed (`covered`) circles get −1 (dropped, never contribute a ring).
  *
- * @param {State} state
+ * @param {ReturnType<typeof build>} state
  * @returns {{covered: Uint8Array, pairCount: number, coveredCount: number,
  *   points: Float64Array, pointCount: number, pairs: Int32Array,
  *   component: Int32Array, componentCount: number}}
@@ -321,7 +301,7 @@ function scan(state) {
  *   - active circle fully covered by ≥2 neighbors jointly → zero arcs
  *   - engulfed (`covered`) circle → skipped
  *
- * @param {State} state
+ * @param {ReturnType<typeof build>} state
  * @param {{covered: Uint8Array, pairCount: number, points: Float64Array, pairs: Int32Array}} scanResult
  */
 function arcs(state, scanResult) {
@@ -500,7 +480,7 @@ function arcs(state, scanResult) {
  * A component missing its shell (or carrying two) is an internal-consistency violation and
  * throws.
  *
- * @param {State} state
+ * @param {ReturnType<typeof build>} state
  * @param {{points: Float64Array, pointCount: number, component: Int32Array,
  *   componentCount: number}} scanResult
  * @param {{arcCount: number, arcCircle: Int32Array, arcThetaStart: Float64Array,
@@ -598,7 +578,7 @@ function stitch(state, scanResult, arcResult) {
 /**
  * Sample the arc topology into a GeoJSON `MultiPolygon`. Self-contained: it consumes only
  * the public arc shape, recomputing each arc's frame from its `[lng, lat, radius]`, so
- * `finish()` and an external resampler walk the exact same path.
+ * `geojson()` and an external resampler walk the exact same path.
  *
  * Each arc is sampled along the exact geodesic circle `p(θ) = cosρ·c + sinρ·(cosθ·u +
  * sinθ·v)`, then projected to `[lng, lat]`. The step adapts to circle size: the largest

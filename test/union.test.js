@@ -1,7 +1,7 @@
 // Fast, deterministic test suite — `npm test` (node --test).
 //
 // End-to-end and black-box: every assertion is made against the PUBLIC CircleUnion API —
-// `arcs()` (exact topology) and `finish()` (sampled GeoJSON) — never against internal
+// `arcs()` (exact topology) and `geojson()` (sampled GeoJSON) — never against internal
 // pipeline state. Two layers:
 //   • the real OpenCelliD fixture (~23k disks) — topology shape, a golden area snapshot,
 //     GeoJSON well-formedness, and the independent membership-oracle check;
@@ -9,7 +9,7 @@
 //
 // Cheap structural invariants (every ring closes, every arc consumed once, one shell per
 // component, arc count ≤ 6n−12) are no longer asserted here — they are runtime throws
-// inside the pipeline, so any violation makes `arcs()`/`finish()` throw.
+// inside the pipeline, so any violation makes `arcs()`/`geojson()` throw.
 //
 // No Monte-Carlo, no randomness: the area is pinned to a golden constant and the oracle
 // sweeps rims at fixed angles, so a failure is a real regression, never flake.
@@ -45,7 +45,7 @@ function union(lng, lat, r, options) {
     const u = new CircleUnion(lng.length);
     for (let i = 0; i < lng.length; i++) u.add(lng[i], lat[i], r[i]);
     const arcs = u.arcs();
-    const geojson = u.finish(options);
+    const geojson = u.geojson(options);
     let holes = 0;
     for (const poly of arcs) holes += poly.length - 1;
     return {
@@ -104,7 +104,7 @@ test('real fixture — topology shape', () => {
 
 test('real fixture — golden union area', () => {
     const u = realUnion();
-    const golden = 220920.667024; // km², sampled finish() output at default tolerance
+    const golden = 220920.667024; // km², sampled geojson() output at default tolerance
     assert.ok(Math.abs(u.areaKm2 - golden) / golden < 1e-6,
         `area ${u.areaKm2.toFixed(6)} km² drifted from golden ${golden} km²`);
 });
@@ -174,7 +174,7 @@ test('ring of circles encloses a hole', () => {
 test('empty union → empty output', () => {
     const u = new CircleUnion(0);
     assert.deepEqual(u.arcs(), []);
-    assert.deepEqual(u.finish(), {type: 'MultiPolygon', coordinates: []});
+    assert.deepEqual(u.geojson(), {type: 'MultiPolygon', coordinates: []});
 });
 
 test('add past the reserved count throws', () => {

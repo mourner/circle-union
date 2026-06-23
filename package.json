@@ -5,6 +5,7 @@
   "type": "module",
   "module": "index.js",
   "main": "circle-union.js",
+  "types": "./index.d.ts",
   "exports": "./index.js",
   "sideEffects": false,
   "files": [
@@ -17,7 +18,8 @@
     "test": "node --test test/*.test.js",
     "bench": "node bench/bench.js",
     "preview": "echo 'open http://localhost:8000/preview/' && python3 -m http.server",
-    "build": "rolldown index.js -o circle-union.js -n CircleUnion -f umd"
+    "build": "rolldown index.js -o circle-union.js -n CircleUnion -f umd",
+    "prepublishOnly": "npm test && npm run build"
   },
   "author": "Volodymyr Agafonkin",
   "license": "ISC",
