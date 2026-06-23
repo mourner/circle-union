@@ -16,7 +16,7 @@
     "pretest": "eslint . && tsc",
     "test": "node --test test/*.test.js",
     "bench": "node bench/bench.js",
-    "preview": "node preview/generate.js",
+    "preview": "echo 'open http://localhost:8000/preview/' && python3 -m http.server",
     "build": "rolldown index.js -o circle-union.js -n CircleUnion -f umd"
   },
   "author": "Volodymyr Agafonkin",

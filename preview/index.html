@@ -1,0 +1,40 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>circle-union — preview</title>
+<link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.js"></script>
+<style>
+  html, body, #map { margin: 0; height: 100%; width: 100%; }
+  #info {
+    position: absolute; top: 10px; left: 10px; z-index: 1;
+    font: 13px/1.4 system-ui, sans-serif; background: rgba(255,255,255,0.85);
+    padding: 6px 10px; border-radius: 4px; pointer-events: none;
+  }
+  #controls {
+    position: absolute; bottom: 10px; left: 10px; z-index: 1;
+    font: 13px/1.4 system-ui, sans-serif; background: rgba(255,255,255,0.85);
+    padding: 8px 10px; border-radius: 4px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  #controls label { display: flex; align-items: center; gap: 6px; }
+  #opacity { width: 160px; }
+</style>
+<div id="map"></div>
+<div id="info">loading…</div>
+<div id="controls">
+  <label>fill <input id="opacity" type="range" min="0" max="1" step="0.01" value="0.15" /></label>
+  <label><input id="stroke" type="checkbox" checked /> stroke</label>
+</div>
+
+<!-- Resolve the library's bare imports to the installed packages so index.js loads unmodified
+     in the browser. Serve from the repo root (`npm run preview`) and open /preview/. -->
+<script type="importmap">
+{
+  "imports": {
+    "flatbush": "/node_modules/flatbush/index.js",
+    "geoflatbush": "/node_modules/geoflatbush/index.js",
+    "flatqueue": "/node_modules/flatqueue/index.js"
+  }
+}
+</script>
+<script type="module" src="./preview.js"></script>

@@ -7,13 +7,26 @@
 // the median. To break the total down during development, drop a temporary `console.time`
 // around a stage; we deliberately keep no per-stage exports so the public surface stays just
 // `CircleUnion`.
+import {readFileSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
 import {CircleUnion} from '../index.js';
-import {loadCells} from '../test/fixtures.js';
 
 const WARMUP = 5;
 const RUNS = 30;
 
-const {n, lng, lat, r} = loadCells();
+// The OpenCelliD Ukraine cell-tower sample (~23k disks). CSV cols: radio,mcc,net,area,cell,unit,lon,lat,range,…
+const path = fileURLToPath(new URL('../test/fixtures/ukraine-cell-id.csv', import.meta.url));
+const lines = readFileSync(path, 'utf8').split('\n');
+const lng = new Float64Array(lines.length), lat = new Float64Array(lines.length), r = new Float64Array(lines.length);
+let n = 0;
+for (const line of lines) {
+    if (!line) continue;
+    const c = line.split(',');
+    const rangeM = +c[8];
+    if (!rangeM) continue;
+    lng[n] = +c[6]; lat[n] = +c[7]; r[n] = rangeM / 1000; // m → km
+    n++;
+}
 
 const times = [];
 for (let i = 0; i < WARMUP + RUNS; i++) {
