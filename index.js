@@ -116,21 +116,11 @@ export function scan(state) {
     const covered = new Uint8Array(n);
     let pairCount = 0, coveredCount = 0;
 
-    // disjoint-set forest over circles (union by size + path halving). Each proper
-    // pair unions its two endpoints; roots partition active circles into components.
+    // disjoint-set forest over circles (union by size + path halving, see dsuFind/dsuUnion).
+    // Each proper pair unions its two endpoints; roots partition active circles into components.
     const parent = new Int32Array(n);
     const setSize = new Int32Array(n);
     for (let i = 0; i < n; i++) { parent[i] = i; setSize[i] = 1; }
-    const find = (x) => {
-        while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
-        return x;
-    };
-    const union = (a, b) => {
-        let ra = find(a), rb = find(b);
-        if (ra === rb) return;
-        if (setSize[ra] < setSize[rb]) { const t = ra; ra = rb; rb = t; }
-        parent[rb] = ra; setSize[ra] += setSize[rb];
-    };
 
     // growable interleaved buffers: points (x, y, z) and pairs (i, j, baseId).
     // pairCount (declared above) doubles as the pair-write cursor.
@@ -156,73 +146,69 @@ export function scan(state) {
         else { covered[i] = 1; coveredCount++; }            // same centre as an earlier, larger circle
     }
 
-    // Per-owner fields read by the visitor below, hoisted out of the loop so the closure
-    // is built once instead of per iteration. within() calls it synchronously, so sharing
-    // one visitor across owners is safe and allocation-free.
-    let oi = 0, oxi = 0, oyi = 0, ozi = 0, ocosRi = 0, osinRi = 0;
-
-    const visit = (j) => {
-        if (j <= oi || covered[j]) return false; // self, the larger owner, or already-dropped
-        const xj = cx[j], yj = cy[j], zj = cz[j], cosRj = cosR[j], sinRj = sinR[j];
-        const cij = oxi * xj + oyi * yj + ozi * zj; // = cos(angular distance)
-        const cosProd = ocosRi * cosRj;
-        const sinProd = osinRi * sinRj;
-        if (cij <= cosProd - sinProd) return false; // disjoint: cij ≤ cos(ρi+ρj)
-
-        if (cij >= cosProd + sinProd) {             // engulf: cij ≥ cos(ρi−ρj), i ⊇ j
-            covered[j] = 1;
-            coveredCount++;
-            return false;
-        }
-
-        // proper intersection — solve p± = α·cᵢ + β·cⱼ ± γ·n for the two points, n = cᵢ × cⱼ.
-        // |n|² = sin²d comes from the cross product directly, NOT from 1−cij²: for close or
-        // small circles cij≈1 and 1−cij² cancels catastrophically (loses ~8 digits, throwing
-        // points hundreds of m off and desyncing the bearings `arcs` derives from them). The
-        // α/β numerators are likewise written with 1−cosd = 2sin²(d/2) to dodge the same
-        // cancellation in cosRᵢ−cij·cosRⱼ. Keeps points on-circle to ~1e-15.
-        const nx = oyi * zj - ozi * yj;
-        const ny = ozi * xj - oxi * zj;
-        const nz = oxi * yj - oyi * xj;
-        const sin2d = nx * nx + ny * ny + nz * nz;   // = |cᵢ×cⱼ|² = sin²(angular dist)
-        const dAng = Math.atan2(Math.sqrt(sin2d), cij);
-        const sh = Math.sin(dAng / 2);
-        const oneMinusCosd = 2 * sh * sh;
-        const alpha = ((ocosRi - cosRj) + cosRj * oneMinusCosd) / sin2d;
-        const beta = ((cosRj - ocosRi) + ocosRi * oneMinusCosd) / sin2d;
-        let g2 = (1 - alpha * alpha - beta * beta - 2 * alpha * beta * cij) / sin2d;
-        if (g2 < 0) g2 = 0;                          // tangency / roundoff guard
-        const gamma = Math.sqrt(g2);
-
-        // mid = α·cᵢ + β·cⱼ ; p± = mid ± γ·n
-        const mx = alpha * oxi + beta * xj;
-        const my = alpha * oyi + beta * yj;
-        const mz = alpha * ozi + beta * zj;
-        const gx = gamma * nx, gy = gamma * ny, gz = gamma * nz;
-
-        if (np * 3 + 6 > points.length) points = grow64(points, points.length * 2);
-        if (pairCount * 3 + 3 > pairs.length) pairs = grow32(pairs, pairs.length * 2);
-
-        // store the pair's two boundary points (p+ = baseId, p− = baseId + 1) and the pair
-        const baseId = np, p = np * 3;
-        points[p] = mx + gx; points[p + 1] = my + gy; points[p + 2] = mz + gz;
-        points[p + 3] = mx - gx; points[p + 4] = my - gy; points[p + 5] = mz - gz;
-        np += 2;
-
-        const q = pairCount * 3;
-        pairs[q] = oi; pairs[q + 1] = j; pairs[q + 2] = baseId;
-        pairCount++;
-
-        union(oi, j); // i and j fall in the same connected component
-
-        return false; // we account inline; keep within()'s result array empty
-    };
-
+    // Radius-descending owner sweep. `within` returns each owner's candidate neighbors
+    // (no filterFn → it just collects them), and we classify each pair inline. Neighbors
+    // come back in the index's traversal order, so processing is deterministic.
     for (let i = 0; i < n; i++) {
         if (covered[i]) continue;
-        oi = i;
-        oxi = cx[i]; oyi = cy[i]; ozi = cz[i]; ocosRi = cosR[i]; osinRi = sinR[i];
-        within(index, lng[i], lat[i], 2 * r[i], visit);
+        const xi = cx[i], yi = cy[i], zi = cz[i], cosRi = cosR[i], sinRi = sinR[i];
+        const neighbors = within(index, lng[i], lat[i], 2 * r[i]);
+
+        for (let t = 0; t < neighbors.length; t++) {
+            const j = neighbors[t];
+            if (j <= i || covered[j]) continue; // self, the larger owner, or already-dropped
+            const xj = cx[j], yj = cy[j], zj = cz[j], cosRj = cosR[j], sinRj = sinR[j];
+            const cij = xi * xj + yi * yj + zi * zj; // = cos(angular distance)
+            const cosProd = cosRi * cosRj;
+            const sinProd = sinRi * sinRj;
+            if (cij <= cosProd - sinProd) continue; // disjoint: cij ≤ cos(ρi+ρj)
+
+            if (cij >= cosProd + sinProd) {         // engulf: cij ≥ cos(ρi−ρj), i ⊇ j
+                covered[j] = 1;
+                coveredCount++;
+                continue;
+            }
+
+            // proper intersection — solve p± = α·cᵢ + β·cⱼ ± γ·n for the two points, n = cᵢ × cⱼ.
+            // |n|² = sin²d comes from the cross product directly, NOT from 1−cij²: for close or
+            // small circles cij≈1 and 1−cij² cancels catastrophically (loses ~8 digits, throwing
+            // points hundreds of m off and desyncing the bearings `arcs` derives from them). The
+            // α/β numerators are likewise written with 1−cosd = 2sin²(d/2) to dodge the same
+            // cancellation in cosRᵢ−cij·cosRⱼ. Keeps points on-circle to ~1e-15.
+            const nx = yi * zj - zi * yj;
+            const ny = zi * xj - xi * zj;
+            const nz = xi * yj - yi * xj;
+            const sin2d = nx * nx + ny * ny + nz * nz;   // = |cᵢ×cⱼ|² = sin²(angular dist)
+            const dAng = Math.atan2(Math.sqrt(sin2d), cij);
+            const sh = Math.sin(dAng / 2);
+            const oneMinusCosd = 2 * sh * sh;
+            const alpha = ((cosRi - cosRj) + cosRj * oneMinusCosd) / sin2d;
+            const beta = ((cosRj - cosRi) + cosRi * oneMinusCosd) / sin2d;
+            let g2 = (1 - alpha * alpha - beta * beta - 2 * alpha * beta * cij) / sin2d;
+            if (g2 < 0) g2 = 0;                          // tangency / roundoff guard
+            const gamma = Math.sqrt(g2);
+
+            // mid = α·cᵢ + β·cⱼ ; p± = mid ± γ·n
+            const mx = alpha * xi + beta * xj;
+            const my = alpha * yi + beta * yj;
+            const mz = alpha * zi + beta * zj;
+            const gx = gamma * nx, gy = gamma * ny, gz = gamma * nz;
+
+            if (np * 3 + 6 > points.length) points = grow64(points, points.length * 2);
+            if (pairCount * 3 + 3 > pairs.length) pairs = grow32(pairs, pairs.length * 2);
+
+            // store the pair's two boundary points (p+ = baseId, p− = baseId + 1) and the pair
+            const baseId = np, p = np * 3;
+            points[p] = mx + gx; points[p + 1] = my + gy; points[p + 2] = mz + gz;
+            points[p + 3] = mx - gx; points[p + 4] = my - gy; points[p + 5] = mz - gz;
+            np += 2;
+
+            const q = pairCount * 3;
+            pairs[q] = i; pairs[q + 1] = j; pairs[q + 2] = baseId;
+            pairCount++;
+
+            dsuUnion(parent, setSize, i, j); // i and j fall in the same connected component
+        }
     }
 
     // compact roots → dense component ids over active circles
@@ -230,7 +216,7 @@ export function scan(state) {
     let componentCount = 0;
     for (let i = 0; i < n; i++) {
         if (covered[i]) continue;
-        const root = find(i);
+        const root = dsuFind(parent, i);
         if (component[root] === -1) component[root] = componentCount++;
         component[i] = component[root];
     }
@@ -277,6 +263,10 @@ export function arcs(state, scanResult) {
 
     // record circle c's covered interval bounded by points pa (id idA) and pb (id idB),
     // selecting the arc toward (dirx,diry,dirz) — the bearing to the other circle's center.
+    /** @param {number} c
+     *  @param {number} ax @param {number} ay @param {number} az @param {number} idA
+     *  @param {number} bx @param {number} by @param {number} bz @param {number} idB
+     *  @param {number} dirx @param {number} diry @param {number} dirz */
     const addInterval = (c, ax, ay, az, idA, bx, by, bz, idB, dirx, diry, dirz) => {
         const eux = ux[c], euy = uy[c], euz = uz[c];
         const nvx = vx[c], nvy = vy[c], nvz = vz[c];
@@ -327,6 +317,7 @@ export function arcs(state, scanResult) {
     let arcEndId = new Int32Array(cap);
     let arcCount = 0, fullCount = 0;
 
+    /** @param {number} c @param {number} ts @param {number} te @param {number} sId @param {number} eId */
     const pushArc = (c, ts, te, sId, eId) => {
         if (arcCount === cap) {
             cap *= 2;
@@ -531,8 +522,8 @@ export function stitch(state, scanResult, arcResult) {
  *
  * @param {State} state
  * @param {{componentCount: number}} scanResult
- * @param {{arcCircle: Int32Array, arcThetaStart: Float64Array, arcThetaEnd: Float64Array,
- *   arcStartId: Int32Array}} arcResult
+ * @param {{arcCircle: Int32Array, arcThetaStart: Float64Array,
+ *   arcThetaEnd: Float64Array}} arcResult
  * @param {{ringCount: number, ringArcs: Int32Array, ringStart: Int32Array,
  *   ringComponent: Int32Array, ringArea: Float64Array}} ringResult
  * @param {{tolerance?: number, minPoints?: number}} [options] `tolerance`: max chord
@@ -543,7 +534,7 @@ export function stitch(state, scanResult, arcResult) {
 export function polygons(state, scanResult, arcResult, ringResult, options = {}) {
     const {r: radius, cx, cy, cz, ux, uy, uz, vx, vy, vz, cosR, sinR} = state;
     const {componentCount} = scanResult;
-    const {arcCircle, arcThetaStart, arcThetaEnd, arcStartId} = arcResult;
+    const {arcCircle, arcThetaStart, arcThetaEnd} = arcResult;
     const {ringCount, ringArcs, ringStart, ringComponent, ringArea} = ringResult;
     const {tolerance = 0.005, minPoints = 24} = options;
     const tol = tolerance > 0 ? tolerance : 0.005;      // km, ~5 m sagitta
@@ -557,10 +548,10 @@ export function polygons(state, scanResult, arcResult, ringResult, options = {})
             const k = ringArcs[a], c = arcCircle[k];
             const cr = cosR[c], sr = sinR[c];
 
-            // sweep angle of this arc; a full circle (startId −1) spans the whole 2π
-            const full = arcStartId[k] === -1;
-            const t0 = full ? 0 : arcThetaStart[k];
-            let dth = full ? TWO_PI : arcThetaEnd[k] - arcThetaStart[k];
+            // sweep angle of this arc; a full circle is stored as [0, 2π] (see arcs),
+            // so the general formula already spans the whole turn — no special case.
+            const t0 = arcThetaStart[k];
+            let dth = arcThetaEnd[k] - arcThetaStart[k];
             if (dth < 0) dth += TWO_PI;
 
             // largest step whose chord stays within `tol` km of the arc at this radius,
@@ -621,6 +612,25 @@ function triExcess(ax, ay, az, bx, by, bz, cx, cy, cz) {
     const bc = bx * cx + by * cy + bz * cz;
     const ca = cx * ax + cy * ay + cz * az;
     return 2 * Math.atan2(triple, 1 + ab + bc + ca);
+}
+
+/**
+ * Disjoint-set find with path halving.
+ * @param {Int32Array} parent @param {number} x @returns {number} the set root of x
+ */
+function dsuFind(parent, x) {
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+}
+/**
+ * Disjoint-set union by size.
+ * @param {Int32Array} parent @param {Int32Array} setSize @param {number} a @param {number} b
+ */
+function dsuUnion(parent, setSize, a, b) {
+    let ra = dsuFind(parent, a), rb = dsuFind(parent, b);
+    if (ra === rb) return;
+    if (setSize[ra] < setSize[rb]) { const t = ra; ra = rb; rb = t; }
+    parent[rb] = ra; setSize[ra] += setSize[rb];
 }
 
 /** @param {Int32Array} a @param {number} cap */

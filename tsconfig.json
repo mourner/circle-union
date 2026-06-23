@@ -1,14 +1,15 @@
 {
   "compilerOptions": {
-    "target": "es2022",
+    "target": "esnext",
     "module": "esnext",
     "moduleResolution": "bundler",
     "allowJs": true,
     "checkJs": true,
     "strict": true,
-    "noImplicitAny": false,
-    "skipLibCheck": true,
-    "noEmit": true
+    "emitDeclarationOnly": true,
+    "declaration": true,
   },
-  "include": ["index.js"]
+  "files": [
+    "index.js"
+  ]
 }
