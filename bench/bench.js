@@ -4,8 +4,10 @@
 // followed by measured runs; we report the best (min) time per stage, which is the most stable
 // estimate of true cost on a noisy machine, plus the median. `build` is re-run every iteration
 // because the later stages consume its allocations.
-import {build, scan, arcs, stitch, polygons} from '../index.js';
+import {_stages} from '../index.js';
 import {loadCells} from '../test/fixtures.js';
+
+const {build, scan, arcs, stitch, assemble, sample} = _stages;
 
 const WARMUP = 5;
 const RUNS = 30;
@@ -19,7 +21,8 @@ const stages = [
     {name: 'scan', make: () => build(lng, lat, r), run: s => scan(s)},
     {name: 'arcs', make: () => { const s = build(lng, lat, r); return [s, scan(s)]; }, run: ([s, sc]) => arcs(s, sc)},
     {name: 'stitch', make: () => { const s = build(lng, lat, r); const sc = scan(s); return [s, sc, arcs(s, sc)]; }, run: ([s, sc, a]) => stitch(s, sc, a)},
-    {name: 'polygons', make: () => { const s = build(lng, lat, r); const sc = scan(s); const a = arcs(s, sc); return [s, sc, a, stitch(s, sc, a)]; }, run: ([s, sc, a, ri]) => polygons(s, sc, a, ri)},
+    {name: 'assemble', make: () => { const s = build(lng, lat, r); const sc = scan(s); const a = arcs(s, sc); return [s, sc, a, stitch(s, sc, a)]; }, run: ([s, sc, a, ri]) => assemble(s, sc, a, ri)},
+    {name: 'sample', make: () => { const s = build(lng, lat, r); const sc = scan(s); const a = arcs(s, sc); return assemble(s, sc, a, stitch(s, sc, a)); }, run: t => sample(t)},
 ];
 
 function measure({make, run}) {
