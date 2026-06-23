@@ -95,7 +95,7 @@ function build(lng, lat, r) {
     // sort indices by radius, descending
     const order = new Uint32Array(n);
     for (let i = 0; i < n; i++) order[i] = i;
-    order.sort((a, b) => r[b] - r[a]);
+    sortByRadius(order, r);
 
     const slng = new Float64Array(n);
     const slat = new Float64Array(n);
@@ -194,17 +194,21 @@ function scan(state) {
         else { covered[i] = 1; coveredCount++; }            // same centre as an earlier, larger circle
     }
 
-    // Radius-descending owner sweep. `within` returns each owner's candidate neighbors (no filterFn → it
-    // just collects them), and we classify each pair inline. Neighbors come back in the index's traversal
+    // Radius-descending owner sweep. `within` filters out candidates owned by earlier circles or already
+    // covered, and we classify the remaining pairs inline. Neighbors come back in the index's traversal
     // order, so processing is deterministic.
+    let owner = 0;
+    /** @param {number} j */
+    const filterNeighbor = j => j > owner && !covered[j];
+
     for (let i = 0; i < n; i++) {
         if (covered[i]) continue;
         const xi = cx[i], yi = cy[i], zi = cz[i], cosRi = cosR[i], sinRi = sinR[i];
-        const neighbors = within(index, lng[i], lat[i], 2 * r[i]);
+        owner = i;
+        const neighbors = within(index, lng[i], lat[i], 2 * r[i], filterNeighbor);
 
         for (let t = 0; t < neighbors.length; t++) {
             const j = neighbors[t];
-            if (j <= i || covered[j]) continue; // self, the larger owner, or already-dropped
             const xj = cx[j], yj = cy[j], zj = cz[j], cosRj = cosR[j], sinRj = sinR[j];
             const cij = xi * xj + yi * yj + zi * zj; // = cos(angular distance)
             const cosProd = cosRi * cosRj;
@@ -660,3 +664,44 @@ function dsuUnion(parent, setSize, a, b) {
 function grow32(a, cap) { const g = new Int32Array(cap); g.set(a); return g; }
 /** @param {Float64Array} a @param {number} cap */
 function grow64(a, cap) { const g = new Float64Array(cap); g.set(a); return g; }
+
+/**
+ * Sort circle indices by descending radius.
+ * @param {Uint32Array} order
+ * @param {Float64Array} r
+ */
+function sortByRadius(order, r) {
+    const stack = [];
+    let left = 0, right = order.length - 1;
+
+    while (true) {
+        while (left < right) {
+            const pivot = order[(left + right) >> 1];
+            const pivotR = r[pivot];
+            let i = left - 1;
+            let j = right + 1;
+
+            while (true) {
+                let oi, oj, ri, rj;
+                do { i++; oi = order[i]; ri = r[oi]; } while (ri > pivotR || (ri === pivotR && oi < pivot));
+                do { j--; oj = order[j]; rj = r[oj]; } while (pivotR > rj || (pivotR === rj && pivot < oj));
+                if (i >= j) break;
+                const tmp = order[i];
+                order[i] = order[j];
+                order[j] = tmp;
+            }
+
+            if (j - left < right - j - 1) {
+                if (left < j) stack.push(left, j);
+                left = j + 1;
+            } else {
+                if (j + 1 < right) stack.push(j + 1, right);
+                right = j;
+            }
+        }
+
+        if (!stack.length) break;
+        right = stack.pop() || 0;
+        left = stack.pop() || 0;
+    }
+}
