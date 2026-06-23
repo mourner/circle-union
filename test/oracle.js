@@ -108,7 +108,9 @@ export function checkTopology(input, topology, {rimN = 256, eps = 1e-9} = {}) {
         const reach = [];
         for (let q = 0; q < cand.length; q++) {
             const i = cand[q];
-            if (key(lng[i], lat[i], r[i]) === k) continue; // self + exact duplicates
+            // self + exact duplicates (numeric compare — building a string key here, once per
+            // candidate across every circle, dominated the whole check)
+            if (lng[i] === lng[c] && lat[i] === lat[c] && r[i] === r[c]) continue;
             const dotc = cx[c] * cx[i] + cy[c] * cy[i] + cz[c] * cz[i];
             if (dotc >= cosR[c] * cosR[i] - sinR[c] * sinR[i] - 1e-12) reach.push(i);
         }
@@ -144,13 +146,4 @@ export function checkTopology(input, topology, {rimN = 256, eps = 1e-9} = {}) {
     }
 
     return {name: 'topology', total, failures, pass: failures.length === 0};
-}
-
-/** Format one check result as a single status line. */
-export function format(result) {
-    const tag = result.pass ? 'OK  ' : 'FAIL';
-    let line = `  [${tag}] ${result.name.padEnd(12)} ${result.total - result.failures.length}/${result.total} ok`;
-    for (const f of result.failures.slice(0, 5)) line += `\n           ↳ ${JSON.stringify(f)}`;
-    if (result.failures.length > 5) line += `\n           ↳ … ${result.failures.length - 5} more`;
-    return line;
 }

@@ -1,51 +1,29 @@
-// Benchmark the pipeline on the real OpenCelliD fixture — `npm run bench`.
+// Benchmark the full union pipeline on the real OpenCelliD fixture — `npm run bench`.
 //
-// Each stage is timed independently with warmup runs (to let the JIT settle and warm caches)
-// followed by measured runs; we report the best (min) time per stage, which is the most stable
-// estimate of true cost on a noisy machine, plus the median. `build` is re-run every iteration
-// because the later stages consume its allocations.
-import {_stages} from '../index.js';
+// Times the common public path end to end: construct a CircleUnion, add every circle, then
+// `finish()` to GeoJSON (build + arc topology + sampling — sampling is a tiny tail, so this
+// also stands in for `arcs()`). Warmup runs let the JIT settle and warm caches; we report the
+// best (min) measured time — the most stable estimate of true cost on a noisy machine — plus
+// the median. To break the total down during development, drop a temporary `console.time`
+// around a stage; we deliberately keep no per-stage exports so the public surface stays just
+// `CircleUnion`.
+import {CircleUnion} from '../index.js';
 import {loadCells} from '../test/fixtures.js';
-
-const {build, scan, arcs, stitch, assemble, sample} = _stages;
 
 const WARMUP = 5;
 const RUNS = 30;
 
 const {n, lng, lat, r} = loadCells();
 
-// Each stage takes the prior stage's output; the runner rebuilds the inputs per iteration so we
-// never time against freed/mutated state. `make` produces fresh inputs, `run` is the timed call.
-const stages = [
-    {name: 'build', make: () => null, run: () => build(lng, lat, r)},
-    {name: 'scan', make: () => build(lng, lat, r), run: s => scan(s)},
-    {name: 'arcs', make: () => { const s = build(lng, lat, r); return [s, scan(s)]; }, run: ([s, sc]) => arcs(s, sc)},
-    {name: 'stitch', make: () => { const s = build(lng, lat, r); const sc = scan(s); return [s, sc, arcs(s, sc)]; }, run: ([s, sc, a]) => stitch(s, sc, a)},
-    {name: 'assemble', make: () => { const s = build(lng, lat, r); const sc = scan(s); const a = arcs(s, sc); return [s, sc, a, stitch(s, sc, a)]; }, run: ([s, sc, a, ri]) => assemble(s, sc, a, ri)},
-    {name: 'sample', make: () => { const s = build(lng, lat, r); const sc = scan(s); const a = arcs(s, sc); return assemble(s, sc, a, stitch(s, sc, a)); }, run: t => sample(t)},
-];
-
-function measure({make, run}) {
-    const times = [];
-    for (let i = 0; i < WARMUP + RUNS; i++) {
-        const input = make();
-        const t0 = performance.now();
-        run(input);
-        const dt = performance.now() - t0;
-        if (i >= WARMUP) times.push(dt);
-    }
-    times.sort((a, b) => a - b);
-    return {min: times[0], median: times[times.length >> 1]};
+const times = [];
+for (let i = 0; i < WARMUP + RUNS; i++) {
+    const t0 = performance.now();
+    const u = new CircleUnion(n);
+    for (let c = 0; c < n; c++) u.add(lng[c], lat[c], r[c]);
+    u.finish();
+    if (i >= WARMUP) times.push(performance.now() - t0);
 }
+times.sort((a, b) => a - b);
 
 console.log(`circle-union benchmark — ${n.toLocaleString()} circles, ${WARMUP} warmup + ${RUNS} runs\n`);
-console.log(`${'stage'.padEnd(12)} ${'min'.padStart(9)} ${'median'.padStart(9)}`);
-
-let totalMin = 0, totalMedian = 0;
-for (const stage of stages) {
-    const {min, median} = measure(stage);
-    totalMin += min; totalMedian += median;
-    console.log(`${stage.name.padEnd(12)} ${min.toFixed(2).padStart(7)}ms ${median.toFixed(2).padStart(7)}ms`);
-}
-console.log(`${'─'.repeat(32)}`);
-console.log(`${'total'.padEnd(12)} ${totalMin.toFixed(2).padStart(7)}ms ${totalMedian.toFixed(2).padStart(7)}ms`);
+console.log(`finish() → GeoJSON: ${times[0].toFixed(2)}ms min, ${times[times.length >> 1].toFixed(2)}ms median`);

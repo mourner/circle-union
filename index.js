@@ -755,8 +755,3 @@ function dsuUnion(parent, setSize, a, b) {
 function grow32(a, cap) { const g = new Int32Array(cap); g.set(a); return g; }
 /** @param {Float64Array} a @param {number} cap */
 function grow64(a, cap) { const g = new Float64Array(cap); g.set(a); return g; }
-
-// Internal pipeline stages, exposed only for per-stage benchmarking. Not part of the
-// public API — typed `any` so it stays a single opaque line in the emitted `.d.ts`.
-/** @type {any} */
-export const _stages = {build, scan, arcs, stitch, assemble, sample};
