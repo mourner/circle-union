@@ -6,6 +6,8 @@ Given `N` points each with a radius, it computes their combined coverage area as
 
 Rather than buffering each circle into a many-sided polygon and running a general-purpose boolean union, it works directly with the **arcs** that bound a union of disks — whose complexity is only `O(n)` — and does all geometry on the unit sphere. That makes it both fast and geodesic-exact: no projection distortion, and no special-casing around the antimeridian or the poles.
 
+[![Build Status](https://github.com/mourner/circle-union/actions/workflows/test.yml/badge.svg)](https://github.com/mourner/circle-union/actions) [![Simply Awesome](https://img.shields.io/badge/simply-awesome-brightgreen.svg)](https://github.com/mourner/projects)
+
 ## Usage
 
 ```js
