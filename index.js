@@ -56,8 +56,7 @@ export class CircleUnion {
         const state = build(this._lng.subarray(0, n), this._lat.subarray(0, n), this._r.subarray(0, n));
         const scanResult = scan(state);
         const arcResult = arcs(state, scanResult);
-        const ringResult = stitch(state, scanResult, arcResult);
-        this._topology = assemble(state, scanResult, arcResult, ringResult);
+        this._topology = stitch(state, scanResult, arcResult);
     }
 
     /**
@@ -96,8 +95,7 @@ export class CircleUnion {
  * @property {Float64Array} cosR
  * @property {Float64Array} sinR    cos/sin of angular radius ρ = r/R
  * @property {Float64Array} ux
- * @property {Float64Array} uy
- * @property {Float64Array} uz      local east unit vector (tangent frame)
+ * @property {Float64Array} uy      local east unit vector (tangent frame); z-component ≡ 0
  * @property {Float64Array} vx
  * @property {Float64Array} vy
  * @property {Float64Array} vz      local north unit vector (tangent frame)
@@ -131,7 +129,7 @@ function build(lng, lat, r) {
     const cz = new Float64Array(n);
     const cosR = new Float64Array(n);
     const sinR = new Float64Array(n);
-    const ux = new Float64Array(n), uy = new Float64Array(n), uz = new Float64Array(n);
+    const ux = new Float64Array(n), uy = new Float64Array(n); // east; uz ≡ 0, not stored
     const vx = new Float64Array(n), vy = new Float64Array(n), vz = new Float64Array(n);
 
     const index = new Flatbush(n);
@@ -152,7 +150,8 @@ function build(lng, lat, r) {
 
         // local tangent frame at the center: east u, north v (both ⊥ c and each other,
         // u × v = c so increasing θ is CCW seen from outside the sphere). θ=0 → east.
-        ux[i] = -sinLng;          uy[i] = cosLng;           uz[i] = 0;
+        // East is horizontal, so its z-component is identically 0 and is never stored.
+        ux[i] = -sinLng;          uy[i] = cosLng;
         vx[i] = -sinLat * cosLng; vy[i] = -sinLat * sinLng; vz[i] = cosLat;
 
         const rho = ri / R;
@@ -163,7 +162,7 @@ function build(lng, lat, r) {
     }
     index.finish();
 
-    return {n, lng: slng, lat: slat, r: sr, cx, cy, cz, cosR, sinR, ux, uy, uz, vx, vy, vz, index};
+    return {n, lng: slng, lat: slat, r: sr, cx, cy, cz, cosR, sinR, ux, uy, vx, vy, vz, index};
 }
 
 /**
@@ -175,7 +174,7 @@ function build(lng, lat, r) {
  *     two boundary points `p± = α·cᵢ + β·cⱼ ± γ·n`, store them once under a stable
  *     integer ID shared by both circles' arc lists, and `union` the pair in a
  *     disjoint-set forest — the overlap graph's connected components *are* the
- *     union's, which `assemble` uses to nest holes into shells by grouping rather
+ *     union's, which `stitch` uses to nest holes into shells by grouping rather
  *     than by point-in-ring search.
  *
  * Point storage is interleaved `[x,y,z]` (points are always consumed as whole
@@ -326,7 +325,7 @@ function scan(state) {
  * @param {{covered: Uint8Array, pairCount: number, points: Float64Array, pairs: Int32Array}} scanResult
  */
 function arcs(state, scanResult) {
-    const {n, cx, cy, cz, ux, uy, uz, vx, vy, vz} = state;
+    const {n, cx, cy, cz, ux, uy, vx, vy, vz} = state;
     const {covered, pairCount, points, pairs} = scanResult;
 
     // Covered-interval events grouped per circle: theta, delta (+1 start / −1 end), and the
@@ -347,11 +346,11 @@ function arcs(state, scanResult) {
      *  @param {number} bx @param {number} by @param {number} bz @param {number} idB
      *  @param {number} dirx @param {number} diry @param {number} dirz */
     const addInterval = (c, ax, ay, az, idA, bx, by, bz, idB, dirx, diry, dirz) => {
-        const eux = ux[c], euy = uy[c], euz = uz[c];
+        const eux = ux[c], euy = uy[c];                  // east, z-component ≡ 0
         const nvx = vx[c], nvy = vy[c], nvz = vz[c];
-        const thA = Math.atan2(ax * nvx + ay * nvy + az * nvz, ax * eux + ay * euy + az * euz);
-        const thB = Math.atan2(bx * nvx + by * nvy + bz * nvz, bx * eux + by * euy + bz * euz);
-        const mid = Math.atan2(dirx * nvx + diry * nvy + dirz * nvz, dirx * eux + diry * euy + dirz * euz);
+        const thA = Math.atan2(ax * nvx + ay * nvy + az * nvz, ax * eux + ay * euy);
+        const thB = Math.atan2(bx * nvx + by * nvy + bz * nvz, bx * eux + by * euy);
+        const mid = Math.atan2(dirx * nvx + diry * nvy + dirz * nvz, dirx * eux + diry * euy);
 
         // CCW from thA to thB; covered arc is the side containing `mid`
         let dab = thB - thA; if (dab < 0) dab += TWO_PI;
@@ -468,85 +467,100 @@ function arcs(state, scanResult) {
 }
 
 /**
- * Stitch boundary arcs into closed rings, and label each ring with the data
- * `assemble` needs *before* sampling inflates the vertex count:
- *   - **connected-component id** (from `scan`'s union-find) — the component of any
- *     of the ring's arcs' circles (all arcs in a ring share one component);
- *   - **signed spherical area** — analytic closed form summed over the arcs, used
- *     for orientation (shell vs hole) under RFC 7946 winding.
+ * Stitch boundary arcs into closed rings and assemble them into the final arc topology —
+ * the `arcs()` output, before any sampling. The two jobs are fused so no per-ring index
+ * bookkeeping is materialized between them: each ring is built directly as its array of
+ * `[lng, lat, radius, startAngle, endAngle]` arc tuples and filed into its polygon as it
+ * closes.
  *
- * Topology: every CCW-oriented arc keeps the disk interior on its left, so each
- * intersection point is the *end* of exactly one arc and the *start* of exactly
- * one other (on the other circle). We map point-ID → the arc starting there, then
- * walk end→start handoffs until the ring closes. Full-circle arcs (`startId = −1`)
- * are standalone single-arc rings (an isolated disk's whole boundary).
+ * **Walk.** Every CCW-oriented arc keeps the disk interior on its left, so each intersection
+ * point is the *end* of exactly one arc and the *start* of exactly one other (on the other
+ * circle). We map point-ID → the arc starting there, then walk end→start handoffs — an exact
+ * integer match, no geometry — until the ring closes. Full-circle arcs (`startId = −1`) are
+ * standalone single-arc rings (an isolated disk's whole boundary). A broken handoff (dead end
+ * or already-consumed next arc) means a degenerate input slipped past dedup — an internal-
+ * consistency violation, so it throws rather than emit a corrupt ring.
  *
- * Area decomposition (exact on the sphere): ring area = geodesic polygon through
- * the arc endpoints (fan of signed spherical triangles from the first vertex) plus,
- * per arc, the segment between the small-circle arc and its chord —
- * `Δθ·(1 − cosρ) − triExcess(c, A, B)` (cap sector minus geodesic triangle). A full
- * circle's ring is the whole cap, `2π·(1 − cosρ)`. Shells come out CCW (positive),
- * holes CW (negative).
+ * **Nest.** Each ring belongs to a polygon by *connectivity*, not geometric search: a
+ * connected component of the union is one shell + zero or more holes, and a hole always
+ * belongs to its own component's shell. So group rings by §3 component id (shared by all arcs
+ * in a ring) — the single positive-area ring is the shell, negatives are its holes — and emit
+ * one polygon per component. No point-in-ring containment test. An isolated disk and an
+ * "island in a hole" are each their own component → their own polygon, exactly as RFC 7946
+ * wants (the case a naive point-in-ring nester mis-parents).
+ *
+ * Orientation is the sign of each ring's signed spherical area, computed analytically as we
+ * walk: geodesic polygon through the arc endpoints (fan of signed spherical triangles from
+ * the first vertex) plus, per arc, the segment between the small-circle arc and its chord
+ * `Δθ·(1 − cosρ) − triExcess(c, A, B)` (cap sector minus geodesic triangle). A full circle's
+ * ring is the whole cap `2π·(1 − cosρ)`. Shells come out CCW (positive area — already RFC
+ * 7946 winding, so §7 needs no reversal), holes CW (negative). Arc angles are pre-unwrapped
+ * (`endAngle = startAngle + sweep`, `sweep ∈ (0, 2π]`); a full circle yields `[…, 0, 2π]`.
+ *
+ * A component missing its shell (or carrying two) is an internal-consistency violation and
+ * throws.
  *
  * @param {State} state
- * @param {{points: Float64Array, pointCount: number, component: Int32Array}} scanResult
+ * @param {{points: Float64Array, pointCount: number, component: Int32Array,
+ *   componentCount: number}} scanResult
  * @param {{arcCount: number, arcCircle: Int32Array, arcThetaStart: Float64Array,
  *   arcThetaEnd: Float64Array, arcStartId: Int32Array, arcEndId: Int32Array}} arcResult
- *
- * A broken handoff (a dead-end or already-consumed next arc) is an internal-consistency
- * violation — it throws rather than emitting a corrupt ring.
- *
- * @returns {{ringCount: number, ringArcs: Int32Array, ringStart: Int32Array,
- *   ringComponent: Int32Array, ringArea: Float64Array}}
+ * @returns {Topology}
  */
 function stitch(state, scanResult, arcResult) {
-    const {cx, cy, cz, cosR} = state;
-    const {points, pointCount, component} = scanResult;
+    const {lng, lat, r, cx, cy, cz, cosR} = state;
+    const {points, pointCount, component, componentCount} = scanResult;
     const {arcCount, arcCircle, arcThetaStart, arcThetaEnd, arcStartId, arcEndId} = arcResult;
 
-    // Resolve the end→start handoff by point ID. Each intersection point is the single
-    // shared vertex of one circle pair, and both circles reference the same point ID there,
-    // so the arc ending at a vertex and the arc leaving it carry identical IDs — an exact
-    // integer match, no geometry. (Relies on `scan` having dropped duplicate circles, which
-    // would otherwise mint two distinct IDs at one location.)
+    // Resolve the end→start handoff by point ID: the arc starting at each intersection point.
     const arcByStartId = new Int32Array(pointCount).fill(-1);
     for (let k = 0; k < arcCount; k++) if (arcStartId[k] !== -1) arcByStartId[arcStartId[k]] = k;
 
+    // Per component, filled as rings close: the shell (positive area) and a lazily-created
+    // hole list. `null` holes for the common hole-free component avoids an empty-array alloc.
+    /** @type {(Ring | null)[]} */ const shellOf = new Array(componentCount).fill(null);
+    /** @type {(Ring[] | null)[]} */ const holesOf = new Array(componentCount).fill(null);
+
+    // file a just-closed ring into its component as the shell (area ≥ 0) or a hole.
+    /** @param {Ring} ring @param {number} comp @param {number} area */
+    const fileRing = (ring, comp, area) => {
+        if (area >= 0) {
+            if (shellOf[comp]) throw new Error('A connected component has more than one shell ring.');
+            shellOf[comp] = ring;
+        } else (holesOf[comp] ??= []).push(ring);
+    };
+
     const visited = new Uint8Array(arcCount);
-    const ringArcs = new Int32Array(arcCount); // arc indices, grouped by ring (each arc written once)
-    let w = 0;                                 // write cursor into ringArcs
-    const ringStart = [0];                     // ring r spans ringArcs[ringStart[r]..ringStart[r+1])
-    /** @type {number[]} */ const ringComponent = [];
-    /** @type {number[]} */ const ringArea = [];
+    let consumed = 0;
 
     for (let k0 = 0; k0 < arcCount; k0++) {
         if (visited[k0]) continue;
         const comp = component[arcCircle[k0]];
 
-        if (arcStartId[k0] === -1) { // full circle → standalone ring (whole cap)
-            visited[k0] = 1;
-            ringArcs[w++] = k0;
-            ringComponent.push(comp);
-            ringArea.push(TWO_PI * (1 - cosR[arcCircle[k0]]));
-            ringStart.push(w);
+        if (arcStartId[k0] === -1) { // full circle → standalone shell ring (whole cap)
+            visited[k0] = 1; consumed++;
+            const c = arcCircle[k0];
+            fileRing([[lng[c], lat[c], r[c], 0, TWO_PI]], comp, TWO_PI * (1 - cosR[c]));
             continue;
         }
 
+        /** @type {Ring} */ const ring = [];
         let area = 0;
         let p0x = 0, p0y = 0, p0z = 0, havePoint0 = false;
         let k = k0;
         for (;;) {
-            visited[k] = 1;
-            ringArcs[w++] = k;
+            visited[k] = 1; consumed++;
 
             const sp = arcStartId[k] * 3, ep = arcEndId[k] * 3;
             const ax = points[sp], ay = points[sp + 1], az = points[sp + 2];
             const bx = points[ep], by = points[ep + 1], bz = points[ep + 2];
             const c = arcCircle[k];
 
-            // segment between arc and its chord: cap sector Δθ(1−cosρ) minus geodesic triangle
             let dth = arcThetaEnd[k] - arcThetaStart[k];
             if (dth < 0) dth += TWO_PI;
+            ring.push([lng[c], lat[c], r[c], arcThetaStart[k], arcThetaStart[k] + dth]);
+
+            // segment between arc and its chord: cap sector Δθ(1−cosρ) minus geodesic triangle
             area += dth * (1 - cosR[c]);
             area -= triExcess(cx[c], cy[c], cz[c], ax, ay, az, bx, by, bz);
 
@@ -559,92 +573,23 @@ function stitch(state, scanResult, arcResult) {
 
             const next = arcByStartId[arcEndId[k]];
             if (next === k0) break; // ring closed
-            // a dead end (−1) or an already-consumed arc means the handoff broke (degenerate
-            // input that slipped past dedup) — an internal-consistency bug, not valid output.
             if (next === -1 || visited[next]) {
                 throw new Error('Ring failed to close — arc handoff broke (likely an undeduplicated coincident circle).');
             }
             k = next;
         }
-
-        ringComponent.push(comp);
-        ringArea.push(area);
-        ringStart.push(w);
+        fileRing(ring, comp, area);
     }
 
-    if (w !== arcCount) throw new Error('Not every arc was consumed exactly once while stitching rings.');
-
-    return {
-        ringCount: ringStart.length - 1,
-        ringArcs,
-        ringStart: Int32Array.from(ringStart),
-        ringComponent: Int32Array.from(ringComponent),
-        ringArea: Float64Array.from(ringArea),
-    };
-}
-
-/**
- * Assemble stitched rings into the arc topology — the `arcs()` output, *before* any
- * sampling. Nesting is a **connectivity** problem, not a geometric search: a connected
- * component of the union is one shell + zero or more holes, and a hole always belongs to
- * its own component's shell. So group rings by §3 component id — the single positive-area
- * ring is the shell, negatives are its holes — and emit one polygon per component. No
- * point-in-ring containment test.
- *
- * An isolated disk and an "island in a hole" are each their own component → their own
- * polygon, exactly as RFC 7946 wants (the case a naive point-in-ring nester mis-parents).
- * Orientation comes from §5's signed area (shells CCW, holes CW); our CCW traversal
- * already produces RFC 7946 winding, so §7 needs no reversal.
- *
- * Each arc is emitted as `[lng, lat, radius, startAngle, endAngle]` with the angle
- * pre-unwrapped (`endAngle = startAngle + sweep`, `sweep ∈ (0, 2π]`); a full circle is
- * stored as `[0, 2π]` upstream, so the general formula already yields `[…, 0, 2π]`.
- *
- * A component missing its shell (or carrying two) is an internal-consistency violation
- * and throws.
- *
- * @param {State} state
- * @param {{componentCount: number}} scanResult
- * @param {{arcCircle: Int32Array, arcThetaStart: Float64Array,
- *   arcThetaEnd: Float64Array}} arcResult
- * @param {{ringCount: number, ringArcs: Int32Array, ringStart: Int32Array,
- *   ringComponent: Int32Array, ringArea: Float64Array}} ringResult
- * @returns {Topology}
- */
-function assemble(state, scanResult, arcResult, ringResult) {
-    const {lng, lat, r} = state;
-    const {componentCount} = scanResult;
-    const {arcCircle, arcThetaStart, arcThetaEnd} = arcResult;
-    const {ringCount, ringArcs, ringStart, ringComponent, ringArea} = ringResult;
-
-    /** @param {number} ri @returns {Ring} */
-    const buildRing = (ri) => {
-        /** @type {Ring} */ const ring = [];
-        for (let a = ringStart[ri]; a < ringStart[ri + 1]; a++) {
-            const k = ringArcs[a], c = arcCircle[k];
-            let dth = arcThetaEnd[k] - arcThetaStart[k];
-            if (dth < 0) dth += TWO_PI;
-            ring.push([lng[c], lat[c], r[c], arcThetaStart[k], arcThetaStart[k] + dth]);
-        }
-        return ring;
-    };
-
-    // group rings by component: the positive-area ring is the shell, negatives are its holes
-    const shellOf = new Int32Array(componentCount).fill(-1);
-    /** @type {number[][]} */ const holesOf = Array.from({length: componentCount}, () => []);
-    for (let ri = 0; ri < ringCount; ri++) {
-        const comp = ringComponent[ri];
-        if (ringArea[ri] >= 0) {
-            if (shellOf[comp] !== -1) throw new Error('A connected component has more than one shell ring.');
-            shellOf[comp] = ri;
-        } else holesOf[comp].push(ri);
-    }
+    if (consumed !== arcCount) throw new Error('Not every arc was consumed exactly once while stitching rings.');
 
     /** @type {Topology} */ const topology = [];
     for (let comp = 0; comp < componentCount; comp++) {
-        if (shellOf[comp] === -1) throw new Error('A connected component has no shell ring.');
-        /** @type {Polygon} */ const poly = [buildRing(shellOf[comp])];
-        for (const hr of holesOf[comp]) poly.push(buildRing(hr));
+        const shell = shellOf[comp];
+        if (!shell) throw new Error('A connected component has no shell ring.');
+        /** @type {Polygon} */ const poly = [shell];
+        const holes = holesOf[comp];
+        if (holes) for (const h of holes) poly.push(h);
         topology.push(poly);
     }
     return topology;
