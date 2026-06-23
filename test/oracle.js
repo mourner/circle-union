@@ -7,11 +7,11 @@
 // stage emits an invariant checkable against that oracle, and all checks here are
 // DETERMINISTIC (fixed-angle rim sweeps, no RNG):
 //
-//   §2 classify  — every covered circle's rim is inside the union-of-others.
-//   §3 points    — each intersection point lies on both parent circles' rims (|P|=1).
-//   §4 arcs      — (soundness) each arc's midpoint is on the boundary, buried by no other disk.
-//   §4 complete  — (completeness) sweeping each active circle's rim, the exposed runs coincide
-//                   exactly with its emitted arcs — catches a *missing* arc the per-arc check can't.
+//   classify  — every covered circle's rim lies inside the union of the others.
+//   points    — each intersection point lies on both parent circles' rims (|P| = 1).
+//   arcs      — (soundness) each arc's midpoint is on the boundary, buried by no other disk.
+//   complete  — (completeness) sweeping each active circle's rim, the exposed runs coincide
+//               exactly with its emitted arcs — catches a *missing* arc the per-arc check can't.
 //
 // (Area is validated separately, in the test, as a golden snapshot of the analytic Σ ringArea —
 // independent random Monte-Carlo estimation lived here once but was dropped for determinism.)
@@ -69,7 +69,7 @@ function rimPoint(state, c, theta, drho, out) {
 }
 
 /**
- * §2 (soundness). Every circle flagged `covered` must be globally redundant: its entire rim lies
+ * Classification soundness. Every circle flagged `covered` must be globally redundant: its entire rim lies
  * inside the union of the OTHER disks, so dropping it cannot change the union. `rimN` sample points
  * per circle; `eps` is the on-boundary band. (The converse — that an *active* circle is exposed —
  * is NOT asserted: a circle can be jointly buried by several neighbours yet engulfed by none, so it
@@ -105,15 +105,15 @@ export function checkClassify(state, scanResult, {rimN = 256, eps = 1e-9} = {}) 
         }
         if (worst < -eps) failures.push({circle: c, kind: 'covered-but-exposed', margin: worst, theta: worstTheta});
     }
-    return {name: '§2 classify', total, failures, pass: failures.length === 0};
+    return {name: 'classify', total, failures, pass: failures.length === 0};
 }
 
 /**
- * §3 (geometry of the solve). Every intersection point must be a true unit-sphere point lying on
- * BOTH parent circles' rims: |P| = 1, dot(P, centerᵢ) = cosRᵢ and dot(P, centerⱼ) = cosRⱼ. This
- * checks the plane∩plane∩sphere solve in isolation. Note §3 deliberately keeps both roots of each
- * pair, including the one buried inside a third disk — selecting which roots bound surviving arcs
- * is §4's job (see checkArcs), not a property of the points themselves.
+ * Geometry of the intersection solve. Every intersection point must be a true unit-sphere point
+ * lying on BOTH parent circles' rims: |P| = 1, dot(P, centerᵢ) = cosRᵢ and dot(P, centerⱼ) = cosRⱼ.
+ * This checks the plane∩plane∩sphere solve in isolation. The solve deliberately keeps both roots of
+ * each pair, including the one buried inside a third disk — selecting which roots bound surviving
+ * arcs is `arcs`'s job (see checkArcs), not a property of the points themselves.
  */
 export function checkPoints(state, scanResult, {eps = 1e-9} = {}) {
     const {cx, cy, cz, cosR} = state;
@@ -136,11 +136,11 @@ export function checkPoints(state, scanResult, {eps = 1e-9} = {}) {
         const err = Math.max(unit, dA, dB);
         if (err > eps) failures.push({point: id, parents: [a, b], unit, onA: dA, onB: dB});
     }
-    return {name: '§3 points', total: pointCount, failures, pass: failures.length === 0};
+    return {name: 'points', total: pointCount, failures, pass: failures.length === 0};
 }
 
 /**
- * §4 soundness. Every emitted boundary arc is genuinely on the union boundary, not buried:
+ * Arc soundness. Every emitted boundary arc is genuinely on the union boundary, not buried:
  * its midpoint is interior to no disk other than its own circle (margin excl self ≤ eps).
  * Its complement — no exposed rim left without an arc (completeness) — is checked authoritatively
  * by `checkArcsComplete`'s rim sweep.
@@ -163,12 +163,12 @@ export function checkArcs(state, arcResult, {eps = 1e-9} = {}) {
         const mIn = oracle(p[0], p[1], p[2], self);
         if (mIn > eps) failures.push({arc: k, circle: c, kind: 'midpoint-buried', margin: mIn});
     }
-    return {name: '§4 arcs', total: arcCount, failures, pass: failures.length === 0};
+    return {name: 'arcs', total: arcCount, failures, pass: failures.length === 0};
 }
 
 /**
- * §4 (completeness). The per-arc soundness check above can only judge arcs that *exist* — it is
- * structurally blind to a boundary segment §4 failed to emit. This check catches the missing arc:
+ * Arc completeness. The per-arc soundness check above can only judge arcs that *exist* — it is
+ * structurally blind to a boundary segment `arcs` failed to emit. This check catches the missing arc:
  * for every active (non-covered) circle, sweep its rim and classify each sample with the oracle
  * (excluding self) — `margin < −eps` ⇒ exposed (on the union boundary), `> +eps` ⇒ buried, else
  * on a vertex (skipped). The exposed samples must coincide *exactly* with the circle's emitted
@@ -223,7 +223,7 @@ export function checkArcsComplete(state, scanResult, arcResult, {rimN = 256, eps
         }
         if (missing || spurious) failures.push({circle: c, missing, spurious, firstTheta});
     }
-    return {name: '§4 complete', total, failures, pass: failures.length === 0};
+    return {name: 'complete', total, failures, pass: failures.length === 0};
 }
 
 /** Run all deterministic stage checks and return them as an array; `format` renders one line each. */

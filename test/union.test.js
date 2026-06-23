@@ -2,9 +2,9 @@
 //
 // Two layers:
 //   • the real OpenCelliD fixture (~23k disks) — structural invariants, a golden area
-//     snapshot, and the independent §3/§4 oracle checks (§2 classify is O(covered·rimN) and
-//     too slow here, so it's exercised on the synthetic cases instead);
-//   • hand-built synthetic cases with known topology — every check including §2 classify,
+//     snapshot, and the independent point/arc oracle checks (the classify check is
+//     O(covered·rimN) and too slow here, so it runs on the synthetic cases instead);
+//   • hand-built synthetic cases with known topology — every check including classify,
 //     run in microseconds.
 //
 // No Monte-Carlo, no randomness: the analytic union area is pinned to a golden constant and the
@@ -74,7 +74,7 @@ test('real fixture — golden union area', () => {
         `area ${u.areaKm2.toFixed(3)} km² drifted from golden ${golden} km²`);
 });
 
-test('real fixture — oracle checks (§3 points, §4 arcs, §4 complete)', () => {
+test('real fixture — oracle checks (points, arcs, completeness)', () => {
     const u = realUnion();
     assertCheck(checkPoints(u.state, u.scanResult));
     assertCheck(checkArcs(u.state, u.arcResult));
@@ -96,7 +96,7 @@ test('real fixture — GeoJSON is well-formed', () => {
     }
 });
 
-// --- synthetic cases: known topology, all checks including §2 classify, all instant ---
+// --- synthetic cases: known topology, all checks including classify, all instant ---
 
 test('two overlapping circles → one shell', () => {
     const u = union([0, 0.1], [0, 0], [10, 10]);
