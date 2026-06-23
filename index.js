@@ -7,19 +7,18 @@ const TWO_PI = 2 * Math.PI;
 
 /**
  * @typedef {[number, number, number, number, number]} Arc
- *   `[lng, lat, radius, startAngle, endAngle]` — lng/lat°, radius km, angles in
- *   radians measured from east CCW, pre-unwrapped so `endAngle ≥ startAngle` and
- *   `sweep = endAngle − startAngle ∈ (0, 2π]`. A full circle is one `[…, 0, 2π]`.
+ *   `[lng, lat, radius, startAngle, endAngle]` — lng/lat°, radius km, angles in radians measured from east
+ *   CCW, pre-unwrapped so `endAngle ≥ startAngle` and `sweep = endAngle − startAngle ∈ (0, 2π]`. A full
+ *   circle is one `[…, 0, 2π]`.
  * @typedef {Arc[]} Ring          ordered CCW (interior on the left)
  * @typedef {Ring[]} Polygon      shell first, then holes
  * @typedef {Polygon[]} Topology  what `arcs()` returns
  */
 
 /**
- * Union of geographic disks. A Flatbush-style builder: reserve a circle count,
- * `add` each circle, then read the result as exact arc topology (`arcs()`) or
- * sampled GeoJSON (`geojson()`). The heavy pipeline (§0–§6) runs once on the first
- * read and is cached; only `geojson`'s sampling step re-runs per call.
+ * Union of geographic disks. A Flatbush-style builder: reserve a circle count, `add` each circle, then read
+ * the result as exact arc topology (`arcs()`) or sampled GeoJSON (`geojson()`). The heavy pipeline runs once
+ * on the first read and is cached; only `geojson`'s sampling step re-runs per call.
  */
 export class CircleUnion {
     /** @param {number} numItems number of circles to reserve space for */
@@ -48,7 +47,7 @@ export class CircleUnion {
         return i;
     }
 
-    /** Run the heavy pipeline once and cache the arc topology (§0–§6). */
+    /** Run the heavy pipeline once and cache the arc topology. */
     _compute() {
         if (this._topology) return;
         const n = this._pos;
@@ -60,9 +59,8 @@ export class CircleUnion {
     }
 
     /**
-     * Exact arc topology — resolution-independent. `[polygon, ...]`, polygon =
-     * `[ring, ...]`, ring = `[arc, ...]`, arc = `[lng, lat, radius, startAngle,
-     * endAngle]` (see the `Arc` typedef). Options-independent and cached.
+     * Exact arc topology — resolution-independent. `[polygon, ...]`, polygon = `[ring, ...]`, ring =
+     * `[arc, ...]`, arc = `[lng, lat, radius, startAngle, endAngle]` (see the `Arc` typedef). Cached.
      * @returns {Topology}
      */
     arcs() {
@@ -72,9 +70,8 @@ export class CircleUnion {
 
     /**
      * GeoJSON `MultiPolygon` sampled from the arc topology.
-     * @param {{tolerance?: number, minPoints?: number}} [options] `tolerance`: max
-     *   arc↔chord deviation in km (default 0.005 ≈ 5 m); `minPoints`: floor on
-     *   vertices per full circle (default 24).
+     * @param {{tolerance?: number, minPoints?: number}} [options] `tolerance`: max arc↔chord deviation in km
+     *   (default 0.005 ≈ 5 m); `minPoints`: floor on vertices per full circle (default 24).
      * @returns {{type: 'MultiPolygon', coordinates: number[][][][]}}
      */
     geojson(options) {
@@ -84,10 +81,9 @@ export class CircleUnion {
 }
 
 /**
- * Setup. Sorts circles by radius descending so the "larger circle owns the pair"
- * rule collapses to `i < j` and any engulfer is processed before what it engulfs.
- * Precomputes per-circle 3-D unit vectors and angular-radius trig (all the
- * transcendentals, once) and builds the spatial index, leaving every downstream
+ * Setup. Sorts circles by radius descending so the "larger circle owns the pair" rule collapses to `i < j`
+ * and any engulfer is processed before what it engulfs. Precomputes per-circle 3-D unit vectors and
+ * angular-radius trig (all the transcendentals, once) and builds the spatial index, leaving every downstream
  * hot loop to pure dot/cross products.
  * @param {Float64Array} lng
  * @param {Float64Array} lat
@@ -109,8 +105,8 @@ function build(lng, lat, r) {
     const cz = new Float64Array(n);
     const cosR = new Float64Array(n); // cos/sin of angular radius ρ = r/R
     const sinR = new Float64Array(n);
-    const ux = new Float64Array(n), uy = new Float64Array(n); // local east unit vector (tangent frame)
-    const vx = new Float64Array(n), vy = new Float64Array(n), vz = new Float64Array(n); // local north unit vector (tangent frame)
+    const ux = new Float64Array(n), uy = new Float64Array(n); // local east unit vector
+    const vx = new Float64Array(n), vy = new Float64Array(n), vz = new Float64Array(n); // local north unit vector
 
     const index = new Flatbush(n);
 
@@ -128,9 +124,9 @@ function build(lng, lat, r) {
         cy[i] = cosLat * sinLng;
         cz[i] = sinLat;
 
-        // local tangent frame at the center: east u, north v (both ⊥ c and each other,
-        // u × v = c so increasing θ is CCW seen from outside the sphere). θ=0 → east.
-        // East is horizontal, so its z-component is identically 0 and is never stored.
+        // local tangent frame at the center: east u, north v (both ⊥ c and each other, u × v = c so
+        // increasing θ is CCW seen from outside the sphere). θ=0 → east. East is horizontal, so its
+        // z-component is identically 0 and is never stored.
         ux[i] = -sinLng;          uy[i] = cosLng;
         vx[i] = -sinLat * cosLng; vy[i] = -sinLat * sinLng; vz[i] = cosLat;
 
@@ -147,22 +143,17 @@ function build(lng, lat, r) {
 
 /**
  * Single radius-descending pass over all owner pairs (`i < j`):
- *   - classify each overlapping pair; flag any circle fully engulfed by another
- *     as `covered` (globally redundant — excluded from all further work, both its
- *     own searches and as a target of others').
- *   - for each *properly* intersecting pair, solve the two planes ∩ sphere for the
- *     two boundary points `p± = α·cᵢ + β·cⱼ ± γ·n`, store them once under a stable
- *     integer ID shared by both circles' arc lists, and `union` the pair in a
- *     disjoint-set forest — the overlap graph's connected components *are* the
- *     union's, which `stitch` uses to nest holes into shells by grouping rather
- *     than by point-in-ring search.
+ *   - classify each overlapping pair; flag any circle fully engulfed by another as `covered` (globally
+ *     redundant — excluded from all further work, both its own searches and as a target of others').
+ *   - for each *properly* intersecting pair, solve the two planes ∩ sphere for the two boundary points
+ *     `p± = α·cᵢ + β·cⱼ ± γ·n`, store them once under a stable integer ID shared by both circles' arc lists,
+ *     and `union` the pair in a disjoint-set forest — the overlap graph's connected components *are* the
+ *     union's, which `stitch` uses to nest holes into shells by grouping rather than by point-in-ring search.
  *
- * Point storage is interleaved `[x,y,z]` (points are always consumed as whole
- * vectors). Pair storage is `[i, j, baseId]` per proper pair; the pair's two
- * points are `baseId` (the `+γ` root) and `baseId + 1` (the `−γ` root).
- *
- * `component` holds a compacted component id (0…componentCount−1) per active
- * circle; engulfed (`covered`) circles get −1 (dropped, never contribute a ring).
+ * Point storage is interleaved `[x,y,z]` (points are always consumed as whole vectors). Pair storage is
+ * `[i, j, baseId]` per proper pair; the pair's two points are `baseId` (the `+γ` root) and `baseId + 1`
+ * (the `−γ` root). `component` holds a compacted component id (0…componentCount−1) per active circle;
+ * engulfed (`covered`) circles get −1 (dropped, never contribute a ring).
  *
  * @param {ReturnType<typeof build>} state
  * @returns {{covered: Uint8Array, pairCount: number, coveredCount: number,
@@ -181,19 +172,18 @@ function scan(state) {
     for (let i = 0; i < n; i++) { parent[i] = i; setSize[i] = 1; }
 
     // growable interleaved buffers: points (x, y, z) and pairs (i, j, baseId).
-    // pairCount (declared above) doubles as the pair-write cursor.
+    // pairCount doubles as the pair-write cursor.
     let points = new Float64Array(1 << 16);
     let pairs = new Int32Array(1 << 15);
     let np = 0; // point count
 
-    // Drop exact-duplicate circles up front (co-located tower rows with bit-identical
-    // lng/lat are common in real data). Must precede the pair sweep: otherwise one larger
-    // circle crossing several duplicates mints bit-identical intersection points under
-    // distinct IDs, desyncing the ring handoff in `stitch`. An O(n) open-addressing hash
-    // set keyed on the exact centre does it — the first (largest-radius) circle at a
-    // location wins, later duplicates are marked covered. Only *bit-identical* centres
-    // need this; near coincidences mint distinct points and are caught by the engulf test
-    // below, so the match is exact float equality (round() only derives hash bits).
+    // Drop exact-duplicate circles up front (co-located tower rows with bit-identical lng/lat are common in
+    // real data). Must precede the pair sweep: otherwise one larger circle crossing several duplicates mints
+    // bit-identical intersection points under distinct IDs, desyncing the ring handoff in `stitch`. An O(n)
+    // open-addressing hash set keyed on the exact centre does it — the first (largest-radius) circle at a
+    // location wins, later duplicates are marked covered. Only *bit-identical* centres need this; near
+    // coincidences mint distinct points and are caught by the engulf test below, so the match is exact float
+    // equality (round() only derives hash bits).
     let cap = 1; while (cap < n * 2) cap <<= 1;
     const mask = cap - 1;
     const slot = new Int32Array(cap).fill(-1);
@@ -204,9 +194,9 @@ function scan(state) {
         else { covered[i] = 1; coveredCount++; }            // same centre as an earlier, larger circle
     }
 
-    // Radius-descending owner sweep. `within` returns each owner's candidate neighbors
-    // (no filterFn → it just collects them), and we classify each pair inline. Neighbors
-    // come back in the index's traversal order, so processing is deterministic.
+    // Radius-descending owner sweep. `within` returns each owner's candidate neighbors (no filterFn → it
+    // just collects them), and we classify each pair inline. Neighbors come back in the index's traversal
+    // order, so processing is deterministic.
     for (let i = 0; i < n; i++) {
         if (covered[i]) continue;
         const xi = cx[i], yi = cy[i], zi = cz[i], cosRi = cosR[i], sinRi = sinR[i];
@@ -227,12 +217,11 @@ function scan(state) {
                 continue;
             }
 
-            // proper intersection — solve p± = α·cᵢ + β·cⱼ ± γ·n for the two points, n = cᵢ × cⱼ.
-            // |n|² = sin²d comes from the cross product directly, NOT from 1−cij²: for close or
-            // small circles cij≈1 and 1−cij² cancels catastrophically (loses ~8 digits, throwing
-            // points hundreds of m off and desyncing the bearings `arcs` derives from them). The
-            // α/β numerators are likewise written with 1−cosd = 2sin²(d/2) to dodge the same
-            // cancellation in cosRᵢ−cij·cosRⱼ. Keeps points on-circle to ~1e-15.
+            // proper intersection — solve p± = α·cᵢ + β·cⱼ ± γ·n for the two points, n = cᵢ × cⱼ. |n|² = sin²d
+            // comes from the cross product directly, NOT from 1−cij²: for close or small circles cij≈1 and 1−cij²
+            // cancels catastrophically (loses ~8 digits, throwing points hundreds of m off and desyncing the
+            // bearings `arcs` derives from them). The α/β numerators are likewise written with 1−cosd = 2sin²(d/2)
+            // to dodge the same cancellation in cosRᵢ−cij·cosRⱼ. Keeps points on-circle to ~1e-15.
             const nx = yi * zj - zi * yj;
             const ny = zi * xj - xi * zj;
             const nz = xi * yj - yi * xj;
@@ -285,17 +274,16 @@ function scan(state) {
 /**
  * Per-circle interval complement → boundary arcs.
  *
- * Each proper pair `(i, j)` from `scan` covers a single angular interval on circle `i`
- * (the part of `∂i` inside disk `j`) and, symmetrically, one on circle `j`. We bound
- * each interval by the two shared intersection points' bearings in the circle's local
- * frame — `θ(p) = atan2(p·v, p·u)` — and pick the arc containing the bearing toward the
- * other center (deepest inside the other disk). Unioning all covered intervals on a
- * circle and taking the complement gives its surviving boundary arcs; each arc endpoint
- * is an intersection point, referenced by its stable ID so `stitch` joins arcs by ID.
+ * Each proper pair `(i, j)` from `scan` covers a single angular interval on circle `i` (the part of `∂i`
+ * inside disk `j`) and, symmetrically, one on circle `j`. We bound each interval by the two shared
+ * intersection points' bearings in the circle's local frame — `θ(p) = atan2(p·v, p·u)` — and pick the arc
+ * containing the bearing toward the other center (deepest inside the other disk). Unioning all covered
+ * intervals on a circle and taking the complement gives its surviving boundary arcs; each arc endpoint is an
+ * intersection point, referenced by its stable ID so `stitch` joins arcs by ID.
  *
- * The union/complement is a circular depth sweep: +1 at each covered interval's CCW
- * start, −1 at its end; boundary arcs are the maximal runs where depth returns to 0.
- * `baseDepth` seeds the sweep with the coverage straddling the atan2 seam (−π).
+ * The union/complement is a circular depth sweep: +1 at each covered interval's CCW start, −1 at its end;
+ * boundary arcs are the maximal runs where depth returns to 0. `baseDepth` seeds the sweep with the coverage
+ * straddling the atan2 seam (−π).
  *
  *   - active circle, no proper neighbors → one full-circle arc (startId = −1)
  *   - active circle fully covered by ≥2 neighbors jointly → zero arcs
@@ -308,9 +296,9 @@ function arcs(state, scanResult) {
     const {n, cx, cy, cz, ux, uy, vx, vy, vz} = state;
     const {covered, pairCount, points, pairs} = scanResult;
 
-    // Covered-interval events grouped per circle: theta, delta (+1 start / −1 end), and the
-    // intersection-point ID at that endpoint. Each proper pair yields one interval per circle
-    // = two events; baseDepth[c] counts intervals wrapping the seam (CCW start > end).
+    // Covered-interval events grouped per circle: theta, delta (+1 start / −1 end), and the intersection-point
+    // ID at that endpoint. Each proper pair yields one interval per circle = two events; baseDepth[c] counts
+    // intervals wrapping the seam (CCW start > end).
     const E = pairCount * 4;
     const evTheta = new Float64Array(E);
     const evDelta = new Int8Array(E);
@@ -319,8 +307,8 @@ function arcs(state, scanResult) {
     const baseDepth = new Int32Array(n);
     let ne = 0;
 
-    // record circle c's covered interval bounded by points pa (id idA) and pb (id idB),
-    // selecting the arc toward (dirx,diry,dirz) — the bearing to the other circle's center.
+    // record circle c's covered interval bounded by points pa (id idA) and pb (id idB), selecting the arc
+    // toward (dirx,diry,dirz) — the bearing to the other circle's center.
     /** @param {number} c
      *  @param {number} ax @param {number} ay @param {number} az @param {number} idA
      *  @param {number} bx @param {number} by @param {number} bz @param {number} idB
@@ -447,38 +435,33 @@ function arcs(state, scanResult) {
 }
 
 /**
- * Stitch boundary arcs into closed rings and assemble them into the final arc topology —
- * the `arcs()` output, before any sampling. The two jobs are fused so no per-ring index
- * bookkeeping is materialized between them: each ring is built directly as its array of
- * `[lng, lat, radius, startAngle, endAngle]` arc tuples and filed into its polygon as it
- * closes.
+ * Stitch boundary arcs into closed rings and assemble them into the final arc topology — the `arcs()`
+ * output, before any sampling. The two jobs are fused so no per-ring index bookkeeping is materialized
+ * between them: each ring is built directly as its array of `[lng, lat, radius, startAngle, endAngle]` arc
+ * tuples and filed into its polygon as it closes.
  *
- * **Walk.** Every CCW-oriented arc keeps the disk interior on its left, so each intersection
- * point is the *end* of exactly one arc and the *start* of exactly one other (on the other
- * circle). We map point-ID → the arc starting there, then walk end→start handoffs — an exact
- * integer match, no geometry — until the ring closes. Full-circle arcs (`startId = −1`) are
- * standalone single-arc rings (an isolated disk's whole boundary). A broken handoff (dead end
- * or already-consumed next arc) means a degenerate input slipped past dedup — an internal-
- * consistency violation, so it throws rather than emit a corrupt ring.
+ * **Walk.** Every CCW-oriented arc keeps the disk interior on its left, so each intersection point is the
+ * *end* of exactly one arc and the *start* of exactly one other (on the other circle). We map point-ID → the
+ * arc starting there, then walk end→start handoffs — an exact integer match, no geometry — until the ring
+ * closes. Full-circle arcs (`startId = −1`) are standalone single-arc rings (an isolated disk's whole
+ * boundary). A broken handoff (dead end or already-consumed next arc) means a degenerate input slipped past
+ * dedup — an internal-consistency violation, so it throws rather than emit a corrupt ring.
  *
- * **Nest.** Each ring belongs to a polygon by *connectivity*, not geometric search: a
- * connected component of the union is one shell + zero or more holes, and a hole always
- * belongs to its own component's shell. So group rings by §3 component id (shared by all arcs
- * in a ring) — the single positive-area ring is the shell, negatives are its holes — and emit
- * one polygon per component. No point-in-ring containment test. An isolated disk and an
- * "island in a hole" are each their own component → their own polygon, exactly as RFC 7946
- * wants (the case a naive point-in-ring nester mis-parents).
+ * **Nest.** Each ring belongs to a polygon by *connectivity*, not geometric search: a connected component of
+ * the union is one shell + zero or more holes, and a hole always belongs to its own component's shell. So
+ * group rings by `scan`'s component id (shared by all arcs in a ring) — the single positive-area ring is the
+ * shell, negatives are its holes — and emit one polygon per component. No point-in-ring containment test. An
+ * isolated disk and an "island in a hole" are each their own component → their own polygon, exactly as RFC
+ * 7946 wants (the case a naive point-in-ring nester mis-parents).
  *
- * Orientation is the sign of each ring's signed spherical area, computed analytically as we
- * walk: geodesic polygon through the arc endpoints (fan of signed spherical triangles from
- * the first vertex) plus, per arc, the segment between the small-circle arc and its chord
- * `Δθ·(1 − cosρ) − triExcess(c, A, B)` (cap sector minus geodesic triangle). A full circle's
- * ring is the whole cap `2π·(1 − cosρ)`. Shells come out CCW (positive area — already RFC
- * 7946 winding, so §7 needs no reversal), holes CW (negative). Arc angles are pre-unwrapped
- * (`endAngle = startAngle + sweep`, `sweep ∈ (0, 2π]`); a full circle yields `[…, 0, 2π]`.
+ * Orientation is the sign of each ring's signed spherical area, computed analytically as we walk: geodesic
+ * polygon through the arc endpoints (fan of signed spherical triangles from the first vertex) plus, per arc,
+ * the segment between the small-circle arc and its chord `Δθ·(1 − cosρ) − triExcess(c, A, B)` (cap sector
+ * minus geodesic triangle). A full circle's ring is the whole cap `2π·(1 − cosρ)`. Shells come out CCW
+ * (positive area — already RFC 7946 winding, so sampling needs no reversal), holes CW (negative). Arc angles
+ * are pre-unwrapped (`endAngle = startAngle + sweep`, `sweep ∈ (0, 2π]`); a full circle yields `[…, 0, 2π]`.
  *
- * A component missing its shell (or carrying two) is an internal-consistency violation and
- * throws.
+ * A component missing its shell (or carrying two) is an internal-consistency violation and throws.
  *
  * @param {ReturnType<typeof build>} state
  * @param {{points: Float64Array, pointCount: number, component: Int32Array,
@@ -496,8 +479,8 @@ function stitch(state, scanResult, arcResult) {
     const arcByStartId = new Int32Array(pointCount).fill(-1);
     for (let k = 0; k < arcCount; k++) if (arcStartId[k] !== -1) arcByStartId[arcStartId[k]] = k;
 
-    // Per component, filled as rings close: the shell (positive area) and a lazily-created
-    // hole list. `null` holes for the common hole-free component avoids an empty-array alloc.
+    // Per component, filled as rings close: the shell (positive area) and a lazily-created hole list.
+    // `null` holes for the common hole-free component avoids an empty-array alloc.
     /** @type {(Ring | null)[]} */ const shellOf = new Array(componentCount).fill(null);
     /** @type {(Ring[] | null)[]} */ const holesOf = new Array(componentCount).fill(null);
 
@@ -576,24 +559,21 @@ function stitch(state, scanResult, arcResult) {
 }
 
 /**
- * Sample the arc topology into a GeoJSON `MultiPolygon`. Self-contained: it consumes only
- * the public arc shape, recomputing each arc's frame from its `[lng, lat, radius]`, so
- * `geojson()` and an external resampler walk the exact same path.
+ * Sample the arc topology into a GeoJSON `MultiPolygon`. Self-contained: it consumes only the public arc
+ * shape, recomputing each arc's frame from its `[lng, lat, radius]`, so `geojson()` and an external
+ * resampler walk the exact same path.
  *
- * Each arc is sampled along the exact geodesic circle `p(θ) = cosρ·c + sinρ·(cosθ·u +
- * sinθ·v)`, then projected to `[lng, lat]`. The step adapts to circle size: the largest
- * `Δθ` whose chord stays within `tolerance` km of the true arc (sagitta `r·(1−cos(Δθ/2))
- * ≤ tol`, so `Δθ_max = 2·acos(1 − tol/r)`), floored at `minPoints` per full turn so even a
- * tiny circle stays round. Each arc emits its start + interior samples and *omits* its end
- * (the next arc's shared start); the ring is closed by repeating its first vertex.
+ * Each arc is sampled along the exact geodesic circle `p(θ) = cosρ·c + sinρ·(cosθ·u + sinθ·v)`, then
+ * projected to `[lng, lat]`. The step adapts to circle size: the largest `Δθ` whose chord stays within
+ * `tolerance` km of the true arc (sagitta `r·(1−cos(Δθ/2)) ≤ tol`, so `Δθ_max = 2·acos(1 − tol/r)`), floored
+ * at `minPoints` per full turn so even a tiny circle stays round. Each arc emits its start + interior
+ * samples and *omits* its end (the next arc's shared start); the ring is closed by repeating its first vertex.
  *
- * Antimeridian/pole straddles are not yet split; regional data (e.g. the Ukraine workload)
- * never triggers them.
+ * Antimeridian/pole straddles are not yet split; regional data (e.g. the Ukraine workload) never triggers them.
  *
  * @param {Topology} topology
- * @param {{tolerance?: number, minPoints?: number}} [options] `tolerance`: max chord
- *   sagitta in km (default 0.005 = 5 m); `minPoints`: floor on samples per full circle
- *   (default 24, keeps small circles round)
+ * @param {{tolerance?: number, minPoints?: number}} [options] `tolerance`: max chord sagitta in km (default
+ *   0.005 = 5 m); `minPoints`: floor on samples per full circle (default 24, keeps small circles round)
  * @returns {{type: 'MultiPolygon', coordinates: number[][][][]}}
  */
 function sample(topology, options = {}) {
@@ -612,7 +592,7 @@ function sample(topology, options = {}) {
 function sampleRing(ring, tol, minPts) {
     /** @type {number[][]} */ const out = [];
     for (const [lngDeg, latDeg, rad, t0, t1] of ring) {
-        // recompute the local frame at this arc's circle (mirrors §0 setup)
+        // recompute the local frame at this arc's circle (mirrors `build`)
         const latR = latDeg * RAD, lngR = lngDeg * RAD;
         const cosLat = Math.cos(latR), sinLat = Math.sin(latR);
         const cosLng = Math.cos(lngR), sinLng = Math.sin(lngR);

@@ -1,12 +1,11 @@
 // Benchmark the full union pipeline on the real OpenCelliD fixture — `npm run bench`.
 //
-// Times the common public path end to end: construct a CircleUnion, add every circle, then
-// `geojson()` (build + arc topology + sampling — sampling is a tiny tail, so this
-// also stands in for `arcs()`). Warmup runs let the JIT settle and warm caches; we report the
-// best (min) measured time — the most stable estimate of true cost on a noisy machine — plus
-// the median. To break the total down during development, drop a temporary `console.time`
-// around a stage; we deliberately keep no per-stage exports so the public surface stays just
-// `CircleUnion`.
+// Times the common public path end to end: construct a CircleUnion, add every circle, then `geojson()`
+// (build + arc topology + sampling — sampling is a tiny tail, so this also stands in for `arcs()`). Warmup
+// runs let the JIT settle and warm caches; we report the best (min) measured time — the most stable estimate
+// of true cost on a noisy machine — plus the median. To break the total down during development, drop a
+// temporary `console.time` around a stage; we deliberately keep no per-stage exports so the public surface
+// stays just `CircleUnion`.
 import {readFileSync} from 'node:fs';
 import {CircleUnion} from '../index.js';
 

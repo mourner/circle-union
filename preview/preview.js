@@ -1,7 +1,7 @@
-// Live preview — parses the raw OpenCelliD tower CSV in the browser, draws each tower as a
-// circle, and computes the union boundary end to end with the actual library. Loaded as a
-// module by index.html; `maplibregl` comes from the CDN <script> there, bare imports inside
-// `index.js` resolve via the import map there. Serve the repo root and open /preview/.
+// Live preview — parses the raw OpenCelliD tower CSV in the browser, draws each tower as a circle, and
+// computes the union boundary end to end with the actual library. Loaded as a module by index.html;
+// `maplibregl` comes from the CDN <script> there, bare imports inside `index.js` resolve via the import map
+// there. Serve the repo root and open /preview/.
 /* global maplibregl */
 import {CircleUnion} from '../index.js';
 

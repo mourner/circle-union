@@ -1,18 +1,17 @@
 // Fast, deterministic test suite — `npm test` (node --test).
 //
-// End-to-end and black-box: every assertion is made against the PUBLIC CircleUnion API —
-// `arcs()` (exact topology) and `geojson()` (sampled GeoJSON) — never against internal
-// pipeline state. Two layers:
-//   • the real OpenCelliD fixture (~23k disks) — topology shape, a golden area snapshot,
-//     GeoJSON well-formedness, and the independent membership-oracle check;
+// End-to-end and black-box: every assertion is made against the PUBLIC CircleUnion API — `arcs()` (exact
+// topology) and `geojson()` (sampled GeoJSON) — never against internal pipeline state. Two layers:
+//   • the real OpenCelliD fixture (~23k disks) — topology shape, a golden area snapshot, GeoJSON
+//     well-formedness, and the independent membership-oracle check;
 //   • hand-built synthetic cases with known topology, run in microseconds.
 //
-// Cheap structural invariants (every ring closes, every arc consumed once, one shell per
-// component, arc count ≤ 6n−12) are no longer asserted here — they are runtime throws
-// inside the pipeline, so any violation makes `arcs()`/`geojson()` throw.
+// Cheap structural invariants (every ring closes, every arc consumed once, one shell per component, arc
+// count ≤ 6n−12) are no longer asserted here — they are runtime throws inside the pipeline, so any violation
+// makes `arcs()`/`geojson()` throw.
 //
-// No Monte-Carlo, no randomness: the area is pinned to a golden constant and the oracle
-// sweeps rims at fixed angles, so a failure is a real regression, never flake.
+// No Monte-Carlo, no randomness: the area is pinned to a golden constant and the oracle sweeps rims at fixed
+// angles, so a failure is a real regression, never flake.
 
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,8 +24,8 @@ const RAD = Math.PI / 180;
 const R = 6371; // mean Earth radius, km
 const TWO_PI = 2 * Math.PI;
 
-// The OpenCelliD Ukraine cell-tower sample (~23k disks): the workload the library was built
-// for. Trimmed to the only columns we use — `lon,lat,range_m` — one tower per line.
+// The OpenCelliD Ukraine cell-tower sample (~23k disks): the workload the library was built for. Trimmed to
+// the only columns we use — `lon,lat,range_m` — one tower per line.
 function loadCells() {
     const lines = readFileSync(new URL('./fixtures/ukraine-cell-id.csv', import.meta.url), 'utf8').split('\n');
     const lng = new Float64Array(lines.length), lat = new Float64Array(lines.length), r = new Float64Array(lines.length);
@@ -185,20 +184,19 @@ test('add past the reserved count throws', () => {
 
 // --- independent membership oracle -----------------------------------------------------------
 //
-// The whole algorithm is validated against ONE independent ground truth: a brute-force
-// membership oracle. A point P (unit vector) is in the union iff it lies inside some disk,
-// i.e. dot(P, centerᵢ) ≥ cosRᵢ for some i — an O(n) test sharing no code with the arc
-// algorithm, so a bug in one is very unlikely to be mirrored in the other.
+// The whole algorithm is validated against ONE independent ground truth: a brute-force membership oracle. A
+// point P (unit vector) is in the union iff it lies inside some disk, i.e. dot(P, centerᵢ) ≥ cosRᵢ for some
+// i — an O(n) test sharing no code with the arc algorithm, so a bug in one is very unlikely to be mirrored
+// in the other.
 //
-// BLACK-BOX BY CONSTRUCTION. `checkTopology` is handed the test's *own input circles* and the
-// *public `arcs()` topology* — nothing internal. It rebuilds everything from the input (its own
-// Flatbush, its own per-circle frames), then judges the public output against it: for each
-// input circle, sweep its rim and classify every sample with the oracle (excluding the circle
-// and any exact duplicates). The exposed runs — points on the union boundary — must coincide
-// *exactly* with that circle's emitted arcs (grouped by its (lng, lat, r) key). This catches a
-// covered circle that kept an arc, a spurious arc, and a *missing* arc (the §3-precision corner
-// the per-arc check is blind to); since arc endpoints are the §3 intersection points, a tight-ε
-// match also validates the solve. Deterministic (fixed-angle rim sweep): a failure is a real
+// BLACK-BOX BY CONSTRUCTION. `checkTopology` is handed the test's *own input circles* and the *public
+// `arcs()` topology* — nothing internal. It rebuilds everything from the input (its own Flatbush, its own
+// per-circle frames), then judges the public output against it: for each input circle, sweep its rim and
+// classify every sample with the oracle (excluding the circle and any exact duplicates). The exposed runs —
+// points on the union boundary — must coincide *exactly* with that circle's emitted arcs (grouped by its
+// (lng, lat, r) key). This catches a covered circle that kept an arc, a spurious arc, and a *missing* arc
+// (the precision corner the per-arc check is blind to); since arc endpoints are the intersection points, a
+// tight-ε match also validates the solve. Deterministic (fixed-angle rim sweep): a failure is a real
 // regression, never flake.
 
 /** Stable key grouping a circle and its exact duplicates. */
@@ -229,8 +227,8 @@ function checkTopology(input, topology, {rimN = 256, eps = 1e-9} = {}) {
     const {lng, lat, r} = input;
     const n = lng.length;
 
-    // Independent per-circle geometry, recomputed from the raw input (mirrors §0 setup but
-    // shares no code with it): center unit vector, east/north frame, cos/sin of angular radius.
+    // Independent per-circle geometry, recomputed from the raw input (mirrors `build` but shares no code
+    // with it): center unit vector, east/north frame, cos/sin of angular radius.
     const cx = new Float64Array(n), cy = new Float64Array(n), cz = new Float64Array(n);
     const ux = new Float64Array(n), uy = new Float64Array(n);                       // east (uz = 0)
     const vx = new Float64Array(n), vy = new Float64Array(n), vz = new Float64Array(n); // north
@@ -271,17 +269,17 @@ function checkTopology(input, topology, {rimN = 256, eps = 1e-9} = {}) {
         total++;
 
         const intervals = arcsByKey.get(k) || [];
-        // Disks that can bury any of c's rim have centers within r_c + maxR — gather once with
-        // the index, then keep only those that actually *reach* c's rim: disk i can cover a rim
-        // point of c only if the two disks touch, dist(centerᵢ, centerc) ≤ ρ_c + ρ_i, i.e.
-        // dot(centers) ≥ cos(ρ_c+ρ_i) = cosR_c·cosR_i − sinR_c·sinR_i. This prunes the lone large
-        // outlier and far small disks, so the per-sample loop stays short.
+        // Disks that can bury any of c's rim have centers within r_c + maxR — gather once with the index,
+        // then keep only those that actually *reach* c's rim: disk i can cover a rim point of c only if the
+        // two disks touch, dist(centerᵢ, centerc) ≤ ρ_c + ρ_i, i.e. dot(centers) ≥ cos(ρ_c+ρ_i) =
+        // cosR_c·cosR_i − sinR_c·sinR_i. This prunes the lone large outlier and far small disks, so the
+        // per-sample loop stays short.
         const cand = within(index, lng[c], lat[c], r[c] + maxR + 1e-6);
         const reach = [];
         for (let q = 0; q < cand.length; q++) {
             const i = cand[q];
-            // self + exact duplicates (numeric compare — building a string key here, once per
-            // candidate across every circle, dominated the whole check)
+            // self + exact duplicates (numeric compare — building a string key here, once per candidate
+            // across every circle, dominated the whole check)
             if (lng[i] === lng[c] && lat[i] === lat[c] && r[i] === r[c]) continue;
             const dotc = cx[c] * cx[i] + cy[c] * cy[i] + cz[c] * cz[i];
             if (dotc >= cosR[c] * cosR[i] - sinR[c] * sinR[i] - 1e-12) reach.push(i);
